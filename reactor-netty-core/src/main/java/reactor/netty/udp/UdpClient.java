@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2021 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2011-2024 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -64,7 +64,7 @@ import static reactor.netty.ReactorNetty.format;
 public abstract class UdpClient extends ClientTransport<UdpClient, UdpClientConfig> {
 
 	/**
-	 * Prepare a {@link UdpClient}
+	 * Prepare a {@link UdpClient}.
 	 *
 	 * @return a {@link UdpClient}
 	 */
@@ -113,7 +113,7 @@ public abstract class UdpClient extends ClientTransport<UdpClient, UdpClientConf
 	}
 
 	/**
-	 * Attach an IO handler to react on connected client
+	 * Attach an IO handler to react on connected client.
 	 *
 	 * @param handler an IO handler that can dispose underlying connection when {@link
 	 * Publisher} terminates.
@@ -150,6 +150,14 @@ public abstract class UdpClient extends ClientTransport<UdpClient, UdpClientConf
 		return super.option(key, value);
 	}
 
+	/**
+	 * The port to which this client should connect.
+	 * If a port is not specified, the default port {@code 12012} is used.
+	 * <p><strong>Note:</strong> The port can be specified also with {@code PORT} environment variable.
+	 *
+	 * @param port the port to connect to
+	 * @return a new {@link UdpClient} reference
+	 */
 	@Override
 	public final UdpClient port(int port) {
 		return super.port(port);
@@ -175,7 +183,7 @@ public abstract class UdpClient extends ClientTransport<UdpClient, UdpClientConf
 	 *
 	 * @param loopResources a new loop resources
 	 * @param preferNative should prefer running on epoll, kqueue or similar instead of java NIO
-	 * @return a new {@link UdpServer} reference
+	 * @return a new {@link UdpClient} reference
 	 */
 	@Override
 	public final UdpClient runOn(LoopResources loopResources, boolean preferNative) {

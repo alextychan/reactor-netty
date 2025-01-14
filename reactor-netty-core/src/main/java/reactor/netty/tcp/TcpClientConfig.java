@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2021 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2024 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -48,7 +48,9 @@ public final class TcpClientConfig extends ClientTransportConfig<TcpClientConfig
 
 	@Override
 	public int channelHash() {
-		return Objects.hash(super.channelHash(), sslProvider);
+		int result = super.channelHash();
+		result = 31 * result + Objects.hashCode(sslProvider);
+		return result;
 	}
 
 	@Override
@@ -57,7 +59,7 @@ public final class TcpClientConfig extends ClientTransportConfig<TcpClientConfig
 	}
 
 	/**
-	 * Return true if that {@link TcpClient} secured via SSL transport
+	 * Return true if that {@link TcpClient} secured via SSL transport.
 	 *
 	 * @return true if that {@link TcpClient} secured via SSL transport
 	 */
@@ -67,7 +69,7 @@ public final class TcpClientConfig extends ClientTransportConfig<TcpClientConfig
 
 	/**
 	 * Return the current {@link SslProvider} if that {@link TcpClient} secured via SSL
-	 * transport or null
+	 * transport or null.
 	 *
 	 * @return the current {@link SslProvider} if that {@link TcpClient} secured via SSL
 	 * transport or null
@@ -138,7 +140,7 @@ public final class TcpClientConfig extends ClientTransportConfig<TcpClientConfig
 
 	/**
 	 * Default value whether the SSL debugging on the client side will be enabled/disabled,
-	 * fallback to SSL debugging disabled
+	 * fallback to SSL debugging disabled.
 	 */
 	static final boolean SSL_DEBUG = Boolean.parseBoolean(System.getProperty(ReactorNetty.SSL_CLIENT_DEBUG, "false"));
 
@@ -147,7 +149,7 @@ public final class TcpClientConfig extends ClientTransportConfig<TcpClientConfig
 		static final MicrometerTcpClientMetricsRecorder INSTANCE = new MicrometerTcpClientMetricsRecorder();
 
 		MicrometerTcpClientMetricsRecorder() {
-			super(reactor.netty.Metrics.TCP_CLIENT_PREFIX, "tcp");
+			super(reactor.netty.Metrics.TCP_CLIENT_PREFIX, "tcp", false);
 		}
 	}
 

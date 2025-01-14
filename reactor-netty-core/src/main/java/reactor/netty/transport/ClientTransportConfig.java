@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2022 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2024 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -53,11 +53,14 @@ public abstract class ClientTransportConfig<CONF extends TransportConfig> extend
 
 	@Override
 	public int channelHash() {
-		return Objects.hash(super.channelHash(), proxyProvider, resolver);
+		int result = super.channelHash();
+		result = 31 * result + Objects.hashCode(proxyProvider);
+		result = 31 * result + Objects.hashCode(resolver);
+		return result;
 	}
 
 	/**
-	 * Return the {@link ConnectionProvider}
+	 * Return the {@link ConnectionProvider}.
 	 *
 	 * @return the {@link ConnectionProvider}
 	 */
@@ -66,7 +69,7 @@ public abstract class ClientTransportConfig<CONF extends TransportConfig> extend
 	}
 
 	/**
-	 * Return the configured callback or null
+	 * Return the configured callback or null.
 	 *
 	 * @return the configured callback or null
 	 */
@@ -76,7 +79,7 @@ public abstract class ClientTransportConfig<CONF extends TransportConfig> extend
 	}
 
 	/**
-	 * Return the configured callback or null
+	 * Return the configured callback or null.
 	 *
 	 * @return the configured callback or null
 	 */
@@ -86,7 +89,7 @@ public abstract class ClientTransportConfig<CONF extends TransportConfig> extend
 	}
 
 	/**
-	 * Return the configured callback or null
+	 * Return the configured callback or null.
 	 *
 	 * @return the configured callback or null
 	 */
@@ -96,16 +99,16 @@ public abstract class ClientTransportConfig<CONF extends TransportConfig> extend
 	}
 
 	/**
-	 * Return true if that {@link ClientTransportConfig} is configured with a proxy
+	 * Return true if that {@link ClientTransportConfig} is configured with a proxy.
 	 *
 	 * @return true if that {@link ClientTransportConfig} is configured with a proxy
 	 */
 	public final boolean hasProxy() {
-		return proxyProvider != null;
+		return proxyProvider != null || proxyProviderSupplier != null;
 	}
 
 	/**
-	 * Return the configured {@link NameResolverProvider} or null
+	 * Return the configured {@link NameResolverProvider} or null.
 	 *
 	 * @return the configured {@link NameResolverProvider} or null
 	 */
@@ -115,7 +118,7 @@ public abstract class ClientTransportConfig<CONF extends TransportConfig> extend
 	}
 
 	/**
-	 * Return the {@link ProxyProvider} if any or null
+	 * Return the {@link ProxyProvider} if any or null.
 	 *
 	 * @return the {@link ProxyProvider} if any or null
 	 */
@@ -125,7 +128,17 @@ public abstract class ClientTransportConfig<CONF extends TransportConfig> extend
 	}
 
 	/**
-	 * Return the remote configured {@link SocketAddress}
+	 * Return the {@link ProxyProvider} supplier if any or null.
+	 *
+	 * @return the {@link ProxyProvider} supplier if any or null
+	 */
+	@Nullable
+	public final Supplier<ProxyProvider> proxyProviderSupplier() {
+		return proxyProviderSupplier;
+	}
+
+	/**
+	 * Return the remote configured {@link SocketAddress}.
 	 *
 	 * @return the remote configured {@link SocketAddress}
 	 */
@@ -152,11 +165,12 @@ public abstract class ClientTransportConfig<CONF extends TransportConfig> extend
 	Consumer<? super CONF>                   doOnConnect;
 	Consumer<? super Connection>             doOnConnected;
 	Consumer<? super Connection>             doOnDisconnected;
-	Consumer<? super Connection>                doOnResolve;
+	Consumer<? super Connection>             doOnResolve;
 	BiConsumer<? super Connection, ? super SocketAddress> doAfterResolve;
 	BiConsumer<? super Connection, ? super Throwable> doOnResolveError;
 	NameResolverProvider                     nameResolverProvider;
 	ProxyProvider                            proxyProvider;
+	Supplier<ProxyProvider>                  proxyProviderSupplier;
 	Supplier<? extends SocketAddress>        remoteAddress;
 	AddressResolverGroup<?>                  resolver;
 
@@ -178,6 +192,7 @@ public abstract class ClientTransportConfig<CONF extends TransportConfig> extend
 		this.doOnResolveError = parent.doOnResolveError;
 		this.nameResolverProvider = parent.nameResolverProvider;
 		this.proxyProvider = parent.proxyProvider;
+		this.proxyProviderSupplier = parent.proxyProviderSupplier;
 		this.remoteAddress = parent.remoteAddress;
 		this.resolver = parent.resolver;
 	}
@@ -219,6 +234,10 @@ public abstract class ClientTransportConfig<CONF extends TransportConfig> extend
 
 	protected void proxyProvider(@Nullable ProxyProvider proxyProvider) {
 		this.proxyProvider = proxyProvider;
+	}
+
+	protected void proxyProviderSupplier(@Nullable Supplier<ProxyProvider> proxyProviderSupplier) {
+		this.proxyProviderSupplier = proxyProviderSupplier;
 	}
 
 	protected AddressResolverGroup<?> resolverInternal() {

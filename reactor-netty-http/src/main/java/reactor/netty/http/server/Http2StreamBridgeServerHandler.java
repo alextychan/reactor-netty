@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018-2023 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2018-2024 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,6 +16,7 @@
 package reactor.netty.http.server;
 
 import java.net.SocketAddress;
+import java.time.Duration;
 import java.time.ZonedDateTime;
 import java.util.Optional;
 import java.util.function.BiFunction;
@@ -23,14 +24,17 @@ import java.util.function.BiPredicate;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelDuplexHandler;
-import io.netty.channel.ChannelFuture;
-import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelPromise;
 import io.netty.handler.codec.DecoderResult;
+import io.netty.handler.codec.http.DefaultFullHttpResponse;
 import io.netty.handler.codec.http.DefaultHttpContent;
+import io.netty.handler.codec.http.DefaultHttpResponse;
+import io.netty.handler.codec.http.DefaultLastHttpContent;
 import io.netty.handler.codec.http.HttpObject;
 import io.netty.handler.codec.http.HttpRequest;
+import io.netty.handler.codec.http.HttpResponse;
+import io.netty.handler.codec.http.HttpResponseStatus;
 import io.netty.handler.codec.http.LastHttpContent;
 import io.netty.handler.codec.http.cookie.ServerCookieDecoder;
 import io.netty.handler.codec.http.cookie.ServerCookieEncoder;
@@ -45,6 +49,7 @@ import reactor.netty.http.logging.HttpMessageArgProviderFactory;
 import reactor.netty.http.logging.HttpMessageLogFactory;
 import reactor.util.annotation.Nullable;
 
+import static io.netty.handler.codec.http.LastHttpContent.EMPTY_LAST_CONTENT;
 import static reactor.netty.ReactorNetty.format;
 
 /**
@@ -54,7 +59,7 @@ import static reactor.netty.ReactorNetty.format;
  *
  * @author Violeta Georgieva
  */
-final class Http2StreamBridgeServerHandler extends ChannelDuplexHandler implements ChannelFutureListener {
+final class Http2StreamBridgeServerHandler extends ChannelDuplexHandler {
 
 	final BiPredicate<HttpServerRequest, HttpServerResponse>      compress;
 	final ServerCookieDecoder                                     cookieDecoder;
@@ -65,6 +70,8 @@ final class Http2StreamBridgeServerHandler extends ChannelDuplexHandler implemen
 	final ConnectionObserver                                      listener;
 	final BiFunction<? super Mono<Void>, ? super Connection, ? extends Mono<Void>>
 	                                                              mapHandle;
+	final Duration                                                readTimeout;
+	final Duration                                                requestTimeout;
 
 	SocketAddress remoteAddress;
 
@@ -83,7 +90,9 @@ final class Http2StreamBridgeServerHandler extends ChannelDuplexHandler implemen
 			@Nullable BiFunction<ConnectionInfo, HttpRequest, ConnectionInfo> forwardedHeaderHandler,
 			HttpMessageLogFactory httpMessageLogFactory,
 			ConnectionObserver listener,
-			@Nullable BiFunction<? super Mono<Void>, ? super Connection, ? extends Mono<Void>> mapHandle) {
+			@Nullable BiFunction<? super Mono<Void>, ? super Connection, ? extends Mono<Void>> mapHandle,
+			@Nullable Duration readTimeout,
+			@Nullable Duration requestTimeout) {
 		this.compress = compress;
 		this.cookieDecoder = decoder;
 		this.cookieEncoder = encoder;
@@ -92,6 +101,8 @@ final class Http2StreamBridgeServerHandler extends ChannelDuplexHandler implemen
 		this.httpMessageLogFactory = httpMessageLogFactory;
 		this.listener = listener;
 		this.mapHandle = mapHandle;
+		this.readTimeout = readTimeout;
+		this.requestTimeout = requestTimeout;
 	}
 
 	@Override
@@ -116,30 +127,36 @@ final class Http2StreamBridgeServerHandler extends ChannelDuplexHandler implemen
 			HttpRequest request = (HttpRequest) msg;
 			HttpServerOperations ops;
 			ZonedDateTime timestamp = ZonedDateTime.now(ReactorNetty.ZONE_ID_SYSTEM);
+			ConnectionInfo connectionInfo = null;
 			try {
 				pendingResponse = true;
+				connectionInfo = ConnectionInfo.from(
+						request,
+						secured,
+						ctx.channel().localAddress(),
+						remoteAddress,
+						forwardedHeaderHandler);
 				ops = new HttpServerOperations(Connection.from(ctx.channel()),
 						listener,
 						request,
 						compress,
-						ConnectionInfo.from(ctx.channel().parent(),
-						                    request,
-						                    secured,
-						                    remoteAddress,
-						                    forwardedHeaderHandler),
+						connectionInfo,
 						cookieDecoder,
 						cookieEncoder,
 						formDecoderProvider,
 						httpMessageLogFactory,
 						true,
 						mapHandle,
+						readTimeout,
+						requestTimeout,
 						secured,
-						timestamp);
+						timestamp,
+						true);
 			}
 			catch (RuntimeException e) {
 				pendingResponse = false;
 				request.setDecoderResult(DecoderResult.failure(e.getCause() != null ? e.getCause() : e));
-				HttpServerOperations.sendDecodingFailures(ctx, listener, secured, e, msg, httpMessageLogFactory, true, timestamp);
+				HttpServerOperations.sendDecodingFailures(ctx, listener, secured, e, msg, httpMessageLogFactory, true, timestamp, connectionInfo, remoteAddress, true);
 				return;
 			}
 			ops.bind();
@@ -162,37 +179,52 @@ final class Http2StreamBridgeServerHandler extends ChannelDuplexHandler implemen
 	@Override
 	@SuppressWarnings("FutureReturnValueIgnored")
 	public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) {
-		if (msg instanceof ByteBuf) {
+		Class<?> msgClass = msg.getClass();
+		if (msgClass == DefaultHttpResponse.class) {
+			//"FutureReturnValueIgnored" this is deliberate
+			ctx.write(msg, promise);
+		}
+		else if (msgClass == DefaultFullHttpResponse.class) {
+			//"FutureReturnValueIgnored" this is deliberate
+			ctx.write(msg, promise);
+			if (HttpResponseStatus.CONTINUE.code() == ((DefaultFullHttpResponse) msg).status().code()) {
+				return;
+			}
+			finalizeResponse(ctx);
+		}
+		else if (msg == EMPTY_LAST_CONTENT || msgClass == DefaultLastHttpContent.class) {
+			ctx.write(msg, promise);
+			finalizeResponse(ctx);
+		}
+		else if (msg instanceof ByteBuf) {
+			if (!pendingResponse) {
+				if (HttpServerOperations.log.isDebugEnabled()) {
+					HttpServerOperations.log.debug(
+							format(ctx.channel(), "Dropped HTTP content, since response has been sent already: {}"), msg);
+				}
+				((ByteBuf) msg).release();
+				promise.setSuccess();
+				return;
+			}
+
 			//"FutureReturnValueIgnored" this is deliberate
 			ctx.write(new DefaultHttpContent((ByteBuf) msg), promise);
 		}
+		else if (msg instanceof HttpResponse && HttpResponseStatus.CONTINUE.code() == ((HttpResponse) msg).status().code()) {
+			//"FutureReturnValueIgnored" this is deliberate
+			ctx.write(msg, promise);
+		}
 		else {
 			//"FutureReturnValueIgnored" this is deliberate
-			ChannelFuture f = ctx.write(msg, promise);
+			ctx.write(msg, promise);
 			if (msg instanceof LastHttpContent) {
-				pendingResponse = false;
-				f.addListener(this);
-				ctx.read();
+				finalizeResponse(ctx);
 			}
 		}
 	}
 
-	@Override
-	public void operationComplete(ChannelFuture future) {
-		if (!future.isSuccess()) {
-			if (HttpServerOperations.log.isDebugEnabled()) {
-				HttpServerOperations.log.debug(format(future.channel(),
-						"Sending last HTTP packet was not successful, terminating the channel"),
-						future.cause());
-			}
-		}
-		else {
-			if (HttpServerOperations.log.isDebugEnabled()) {
-				HttpServerOperations.log.debug(format(future.channel(),
-						"Last HTTP packet was sent, terminating the channel"));
-			}
-		}
-
-		HttpServerOperations.cleanHandlerTerminate(future.channel());
+	void finalizeResponse(ChannelHandlerContext ctx) {
+		pendingResponse = false;
+		ctx.read();
 	}
 }

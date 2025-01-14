@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019-2021 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2019-2024 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,12 +16,14 @@
 package reactor.netty.channel;
 
 import java.lang.ref.WeakReference;
+import java.time.Duration;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Queue;
 import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -35,11 +37,14 @@ import io.netty.util.ReferenceCounted;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.reactivestreams.Subscription;
+import reactor.core.CoreSubscriber;
 import reactor.core.Exceptions;
+import reactor.core.Fuseable;
 import reactor.core.publisher.BaseSubscriber;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Hooks;
 import reactor.core.publisher.Mono;
+import reactor.core.publisher.Operators;
 import reactor.core.publisher.Sinks;
 import reactor.test.StepVerifier;
 import reactor.test.publisher.TestPublisher;
@@ -48,6 +53,8 @@ import reactor.test.util.RaceTestUtils;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
+ * This test class verifies {@link MonoSendMany}.
+ *
  * @author Stephane Maldini
  */
 class MonoSendManyTest {
@@ -150,7 +157,7 @@ class MonoSendManyTest {
 		            .consumeSubscriptionWith(s -> _w.add(new WeakReference<>(s)))
 		            .then(channel::runPendingTasks)
 		            .thenCancel()
-		            .verify();
+		            .verify(Duration.ofSeconds(5));
 
 		System.gc();
 		wait(_w.get(0));
@@ -257,6 +264,85 @@ class MonoSendManyTest {
 					.isEqualTo(messagesToSend);
 			discarded.clear();
 		}
+	}
+
+
+	@ParameterizedTest
+	@ValueSource(booleans = {true, false})
+	@SuppressWarnings("unchecked")
+	void shouldCallQueueClearToNotifyTermination(boolean flushOnEach) {
+		//use an extra handler
+		EmbeddedChannel channel = new EmbeddedChannel(true, true, new ChannelHandlerAdapter() {});
+		AtomicBoolean cleared = new AtomicBoolean();
+
+		Sinks.Many<ByteBuf> source = Sinks.many().unicast().onBackpressureBuffer();
+		MonoSendMany<ByteBuf, ByteBuf> m =
+				MonoSendMany.byteBufSource(source.asFlux().transform(Operators.<ByteBuf, ByteBuf>lift((__,
+						downstream) -> new CoreSubscriber<ByteBuf>() {
+					@Override
+					public void onSubscribe(Subscription s) {
+						downstream.onSubscribe(new Fuseable.QueueSubscription<ByteBuf>() {
+							@Override
+							public void request(long n) {
+								s.request(n);
+							}
+
+							@Override
+							public void cancel() {
+								s.cancel();
+							}
+
+							@Override
+							public int size() {
+								return ((Fuseable.QueueSubscription<ByteBuf>) s).size();
+							}
+
+							@Override
+							public boolean isEmpty() {
+								return ((Fuseable.QueueSubscription<ByteBuf>) s).isEmpty();
+							}
+
+							@Override
+							public void clear() {
+								cleared.set(true);
+								((Fuseable.QueueSubscription<ByteBuf>) s).clear();
+							}
+
+							@Override
+							public ByteBuf poll() {
+								return ((Fuseable.QueueSubscription<ByteBuf>) s).poll();
+							}
+
+							@Override
+							public int requestFusion(int requestedMode) {
+								return ((Fuseable.QueueSubscription<ByteBuf>) s).requestFusion(requestedMode);
+							}
+						});
+					}
+
+					@Override
+					public void onNext(ByteBuf buf) {
+						downstream.onNext(buf);
+					}
+
+					@Override
+					public void onError(Throwable t) {
+						downstream.onError(t);
+					}
+
+					@Override
+					public void onComplete() {
+						downstream.onComplete();
+					}
+				})), channel, b -> flushOnEach);
+		m.subscribe();
+		Queue<Object> messages = channel.outboundMessages();
+
+		source.emitComplete(Sinks.EmitFailureHandler.FAIL_FAST);
+
+		channel.flush();
+		messages.forEach(ReferenceCountUtil::release);
+		assertThat(cleared).isTrue();
 	}
 
 	static void wait(WeakReference<Subscription> ref) {

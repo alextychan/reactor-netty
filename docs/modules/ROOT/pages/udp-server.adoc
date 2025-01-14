@@ -1,0 +1,216 @@
+:sourcedir: {core}/src/main/java
+:examples-link: {reactor-netty-github-repo}/reactor-netty-examples/src/main/java/reactor/netty/examples/documentation/udp/server
+:examples-dir: {examples}/src/main/java/reactor/netty/examples/documentation/udp/server
+:wirelogger: reactor.netty.udp.UdpServer
+
+[[udp-server]]
+= UDP Server
+
+Reactor Netty provides the easy-to-use and easy-to-configure
+{javadoc}/reactor/netty/udp/UdpServer.html[`UdpServer`].
+It hides most of the Netty functionality that is required to create a `UDP` server
+and adds `Reactive Streams` backpressure.
+
+[[starting-and-stopping]]
+== Starting and Stopping
+
+To start a UDP server, a {javadoc}/reactor/netty/udp/UdpServer.html[UdpServer]
+instance has to be created and configured.
+By default, the host is configured to be `localhost` and the port is `12012`.
+The following example shows how to create and start a UDP server:
+
+{examples-link}/create/Application.java
+[%unbreakable]
+----
+include::{examples-dir}/create/Application.java[lines=18..32]
+----
+<1> Creates a {javadoc}/reactor/netty/udp/UdpServer.html[`UdpServer`]
+instance that is ready for configuring.
+<2> Starts the server in a blocking fashion and waits for it to finish initializing.
+
+The returned {javadoc}/reactor/netty/Connection.html[`Connection`]
+offers a simple server API, including {javadoc}/reactor/netty/DisposableChannel.html#disposeNow-java.time.Duration-[`disposeNow()`],
+which shuts the server down in a blocking fashion.
+
+[[host-and-port]]
+=== Host and Port
+
+In order to serve on a specific host and port, you can apply the following configuration to the `UDP` server:
+
+{examples-link}/address/Application.java
+[%unbreakable]
+----
+include::{examples-dir}/address/Application.java[lines=18..34]
+----
+<1> Configures the `UDP` server host
+<2> Configures the `UDP` server port
+
+NOTE: The port can be specified also with *PORT* environment variable.
+
+[[eager-initialization]]
+== Eager Initialization
+
+By default, the initialization of the `UdpServer` resources happens on demand. This means that the `bind
+operation` absorbs the extra time needed to initialize and load:
+
+ * the event loop group
+ * the native transport libraries (when native transport is used)
+
+When you need to preload these resources, you can configure the `UdpServer` as follows:
+
+{examples-link}/warmup/Application.java
+[%unbreakable]
+----
+include::{examples-dir}/warmup/Application.java[lines=18..51]
+----
+<1> Initialize and load the event loop group and the native transport libraries
+
+[[writing-data]]
+== Writing Data
+
+To send data to the remote peer, you must attach an I/O handler.
+The I/O handler has access to {javadoc}/reactor/netty/udp/UdpOutbound.html[`UdpOutbound`],
+to be able to write data.
+The following example shows how to send `hello`:
+
+{examples-link}/send/Application.java
+[%unbreakable]
+----
+include::{examples-dir}/send/Application.java[lines=18..51]
+----
+<1> Sends a `hello` string to the remote peer
+
+[[consuming-data]]
+== Consuming Data
+
+To receive data from a remote peer, you must attach an I/O handler.
+The I/O handler has access to {javadoc}/reactor/netty/udp/UdpInbound.html[`UdpInbound`],
+to be able to read data.
+The following example shows how to consume data:
+
+{examples-link}/read/Application.java
+[%unbreakable]
+----
+include::{examples-dir}/read/Application.java[lines=18..47]
+----
+<1> Receives data from the remote peer
+
+[[lifecycle-callbacks]]
+== Lifecycle Callbacks
+
+The following lifecycle callbacks are provided to let you extend the `UdpServer`:
+
+[width="100%",options="header"]
+|=======
+| Callback | Description
+| `doOnBind` | Invoked when the server channel is about to bind.
+| `doOnBound` | Invoked when the server channel is bound.
+| `doOnChannelInit` | Invoked when initializing the channel.
+| `doOnUnbound` | Invoked when the server channel is unbound.
+|=======
+
+The following example uses the `doOnBound` and `doOnChannelInit` callbacks:
+
+{examples-link}/lifecycle/Application.java
+[%unbreakable]
+----
+include::{examples-dir}/lifecycle/Application.java[lines=18..39]
+----
+<1> `Netty` pipeline is extended with `LineBasedFrameDecoder` when the server channel is bound.
+<2> `Netty` pipeline is extended with `LoggingHandler` when initializing the channel.
+
+[[connection-configuration]]
+== Connection Configuration
+
+This section describes three kinds of configuration that you can use at the UDP level:
+
+* xref:udp-server.adoc#server-udp-connection-configurations-channel-options[Channel Options]
+* xref:udp-server.adoc#server-udp-connection-configurations-wire-logger[Wire Logger]
+* xref:udp-server.adoc#server-udp-connection-configurations-event-loop-group[Event Loop Group]
+
+[[server-udp-connection-configurations-channel-options]]
+=== Channel Options
+
+By default, the `UDP` server is configured with the following options:
+
+{core-source-link}/reactor/netty/udp/UdpServerBind.java
+[%unbreakable]
+----
+include::{sourcedir}/reactor/netty/udp/UdpServerBind.java[lines=40..44]
+----
+
+If you need additional options or need to change the current options, you can apply the following configuration:
+
+{examples-link}/channeloptions/Application.java
+[%unbreakable]
+----
+include::{examples-dir}/channeloptions/Application.java[lines=18..34]
+----
+
+For more information about Netty channel options, see the following links:
+
+* {nettyjavadoc}/io/netty/channel/ChannelOption.html[Common ChannelOption]
+* {nettyjavadoc}/io/netty/channel/epoll/EpollChannelOption.html[Epoll ChannelOption]
+* {nettyjavadoc}/io/netty/channel/kqueue/KQueueChannelOption.html[KQueue ChannelOption]
+* https://docs.oracle.com/javase/8/docs/technotes/guides/net/socketOpt.html[Socket Options]
+
+[[server-udp-connection-configurations-wire-logger]]
+include::partial$wire-logger.adoc[]
+
+[[server-udp-connection-configurations-event-loop-group]]
+include::partial$eventloop.adoc[]
+
+[[metrics]]
+== Metrics
+The UDP server supports built-in integration with https://micrometer.io/[`Micrometer`].
+It exposes all metrics with a prefix of `reactor.netty.udp.server`.
+
+The following table provides information for the UDP server metrics:
+
+[width="100%",options="header"]
+|=======
+| metric name | type | description
+| reactor.netty.udp.server.data.received | DistributionSummary | Amount of the data received, in bytes.
+See xref:observability.adoc#observability-metrics-data-received[Data Received]
+| reactor.netty.udp.server.data.sent | DistributionSummary | Amount of the data sent, in bytes.
+See xref:observability.adoc#observability-metrics-data-sent[Data Sent]
+| reactor.netty.udp.server.errors | Counter | Number of errors that occurred.
+See xref:observability.adoc#observability-metrics-errors-count[Errors Count]
+|=======
+
+These additional metrics are also available:
+
+include::partial$alloc-metrics.adoc[]
+include::partial$eventloop-metrics.adoc[]
+
+The following example enables that integration:
+
+{examples-link}/metrics/Application.java
+[%unbreakable]
+----
+include::{examples-dir}/metrics/Application.java[lines=18..34]
+----
+<1> Enables the built-in integration with Micrometer
+
+When UDP server metrics are needed for an integration with a system other than `Micrometer` or you want
+to provide your own integration with `Micrometer`, you can provide your own metrics recorder, as follows:
+
+{examples-link}/metrics/custom/Application.java
+[%unbreakable]
+----
+include::{examples-dir}/metrics/custom/Application.java[lines=18..35]
+----
+<1> Enables UDP server metrics and provides {javadoc}/reactor/netty/channel/ChannelMetricsRecorder.html[`ChannelMetricsRecorder`] implementation.
+
+[[unix-domain-sockets]]
+== Unix Domain Sockets
+The `UdpServer` supports Unix Domain Datagram Sockets (UDS) when native transport is in use.
+
+The following example shows how to use UDS support:
+
+{examples-link}/uds/Application.java
+[%unbreakable]
+----
+include::{examples-dir}/uds/Application.java[lines=18..48]
+----
+<1> Specifies `DomainSocketAddress` that will be used

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017-2023 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2017-2024 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,30 +22,49 @@ import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 import java.nio.charset.Charset;
 import java.time.Duration;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BiFunction;
 import java.util.zip.GZIPInputStream;
 
+import com.aayushatharva.brotli4j.decoder.DecoderJNI;
+import com.aayushatharva.brotli4j.decoder.DirectDecompress;
+import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelInboundHandlerAdapter;
+import io.netty.handler.codec.compression.Brotli;
+import io.netty.handler.codec.compression.Zstd;
+import io.netty.handler.codec.http.HttpHeaderNames;
 import io.netty.handler.codec.http.HttpHeaders;
+import io.netty.handler.codec.http.LastHttpContent;
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
 import io.netty.handler.ssl.util.SelfSignedCertificate;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.reactivestreams.Publisher;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.publisher.Sinks;
 import reactor.core.scheduler.Schedulers;
 import reactor.netty.BaseHttpTest;
 import reactor.netty.DisposableServer;
 import reactor.netty.SocketUtils;
 import reactor.netty.http.client.HttpClient;
 import reactor.netty.http.server.HttpServer;
+import reactor.netty.http.server.HttpServerResponse;
 import reactor.test.StepVerifier;
 import reactor.util.function.Tuple2;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static reactor.netty.NettyPipeline.HttpCodec;
 
 /**
+ * This test class verifies HTTP compression.
+ *
  * @author mostroverkhov
  * @author smaldini
  * @author Violeta Georgieva
@@ -54,11 +73,12 @@ class HttpCompressionClientServerTests extends BaseHttpTest {
 
 	@Retention(RetentionPolicy.RUNTIME)
 	@Target(ElementType.METHOD)
-	@ParameterizedTest(name = "{displayName}({0}, {1})")
+	@ParameterizedTest
 	@MethodSource("data")
 	@interface ParameterizedCompressionTest {
 	}
 
+	@SuppressWarnings("deprecation")
 	static Object[][] data() throws Exception {
 		SelfSignedCertificate cert = new SelfSignedCertificate();
 		Http2SslContextSpec serverCtx = Http2SslContextSpec.forServer(cert.certificate(), cert.privateKey());
@@ -188,6 +208,70 @@ class HttpCompressionClientServerTests extends BaseHttpTest {
 	}
 
 	@ParameterizedCompressionTest
+	void brotliServerCompressionEnabled(HttpServer server, HttpClient client) throws Exception {
+		assertThat(Brotli.isAvailable()).isTrue();
+		disposableServer =
+				server.compress(true)
+				      .handle((in, out) -> out.sendString(Mono.just("reply")))
+				      .bindNow(Duration.ofSeconds(10));
+
+		//don't activate compression on the client options to avoid auto-handling (which removes the header)
+		Tuple2<byte[], HttpHeaders> resp =
+				//edit the header manually to attempt to trigger compression on server side
+				client.port(disposableServer.port())
+				      .compress(false)
+				      .headers(h -> h.add("Accept-Encoding", "br, gzip"))
+				      .get()
+				      .uri("/test")
+				      .responseSingle((res, buf) -> buf.asByteArray()
+				                                       .zipWith(Mono.just(res.responseHeaders())))
+				      .block(Duration.ofSeconds(10));
+
+		assertThat(resp).isNotNull();
+		assertThat(resp.getT2().get("content-encoding")).isEqualTo("br");
+
+		final byte[] compressedData = resp.getT1();
+		assertThat(new String(compressedData, Charset.defaultCharset())).isNotEqualTo("reply");
+
+		DirectDecompress directDecompress = DirectDecompress.decompress(compressedData);
+		assertThat(directDecompress.getResultStatus()).isEqualTo(DecoderJNI.Status.DONE);
+		final byte[] decompressedData = directDecompress.getDecompressedData();
+		assertThat(decompressedData).isNotEmpty();
+		assertThat(new String(decompressedData, Charset.defaultCharset())).isEqualTo("reply");
+	}
+
+	@ParameterizedCompressionTest
+	void zstdServerCompressionEnabled(HttpServer server, HttpClient client) {
+		assertThat(Zstd.isAvailable()).isTrue();
+		disposableServer =
+				server.compress(true)
+				      .handle((in, out) -> out.sendString(Mono.just("reply")))
+				      .bindNow(Duration.ofSeconds(10));
+
+		//don't activate compression on the client options to avoid auto-handling (which removes the header)
+		Tuple2<byte[], HttpHeaders> resp =
+				//edit the header manually to attempt to trigger compression on server side
+				client.port(disposableServer.port())
+				      .compress(false)
+				      .headers(h -> h.add("Accept-Encoding", "zstd, gzip"))
+				      .get()
+				      .uri("/test")
+				      .responseSingle((res, buf) -> buf.asByteArray()
+				                                       .zipWith(Mono.just(res.responseHeaders())))
+				      .block(Duration.ofSeconds(10));
+
+		assertThat(resp).isNotNull();
+		assertThat(resp.getT2().get("content-encoding")).isEqualTo("zstd");
+
+		final byte[] compressedData = resp.getT1();
+		assertThat(new String(compressedData, Charset.defaultCharset())).isNotEqualTo("reply");
+
+		final byte[] decompressedData = com.github.luben.zstd.Zstd.decompress(compressedData, 1_000);
+		assertThat(decompressedData).isNotEmpty();
+		assertThat(new String(decompressedData, Charset.defaultCharset())).isEqualTo("reply");
+	}
+
+	@ParameterizedCompressionTest
 	void serverCompressionEnabledSmallResponse(HttpServer server, HttpClient client) {
 		disposableServer =
 				server.compress(25)
@@ -196,12 +280,14 @@ class HttpCompressionClientServerTests extends BaseHttpTest {
 				                   .get("/2", (in, out) -> out.sendString(Mono.just("reply")))
 				                   .get("/3", (in, out) -> out.header("content-length", "5") //explicit 'content-length'
 				                                              .sendObject(Unpooled.wrappedBuffer("reply".getBytes(Charset.defaultCharset()))))
-				                   .get("/4", (in, out) -> out.sendObject(Unpooled.wrappedBuffer("reply".getBytes(Charset.defaultCharset())))))
+				                   .get("/4", (in, out) -> out.sendObject(Unpooled.wrappedBuffer("reply".getBytes(Charset.defaultCharset()))))
+				                   .get("/5", (in, out) -> out.header("content-length", "5") //explicit 'content-length'))
+				                                              .sendString(Flux.just("r", "e", "p", "l", "y"))))
 				      .bindNow(Duration.ofSeconds(10));
 
 		//don't activate compression on the client options to avoid auto-handling (which removes the header)
 		//edit the header manually to attempt to trigger compression on server side
-		Flux.range(1, 4)
+		Flux.range(1, 5)
 		    .flatMap(i ->
 		            client.port(disposableServer.port())
 		                  .headers(h -> h.add("Accept-Encoding", "gzip"))
@@ -377,7 +463,7 @@ class HttpCompressionClientServerTests extends BaseHttpTest {
 
 	@ParameterizedCompressionTest
 	void compressionActivatedOnClientAddsHeader(HttpServer server, HttpClient client) {
-		AtomicReference<String> zip = new AtomicReference<>("fail");
+		AtomicReference<List<String>> acceptEncodingHeaderValues = new AtomicReference<>(Collections.singletonList("fail"));
 
 		disposableServer =
 				server.compress(true)
@@ -385,13 +471,15 @@ class HttpCompressionClientServerTests extends BaseHttpTest {
 				      .bindNow(Duration.ofSeconds(10));
 		client.port(disposableServer.port())
 		      .compress(true)
-		      .headers(h -> zip.set(h.get("accept-encoding")))
+		      .headers(h -> acceptEncodingHeaderValues.set(h.getAll("accept-encoding")))
 		      .get()
 		      .uri("/test")
 		      .responseContent()
 		      .blockLast(Duration.ofSeconds(10));
 
-		assertThat(zip.get()).isEqualTo("gzip");
+		assertThat(acceptEncodingHeaderValues.get())
+				.hasSize(2)
+				.hasSameElementsAs(Arrays.asList("br", "gzip"));
 	}
 
 	@ParameterizedCompressionTest
@@ -504,13 +592,32 @@ class HttpCompressionClientServerTests extends BaseHttpTest {
 	}
 
 	@Test
-	void testIssue825_2() {
+	void testIssue825SendMono() {
+		doTestIssue825_2((b, out) -> out.send(Mono.just(b)));
+	}
+
+	@Test
+	void testIssue825SendObject() {
+		doTestIssue825_2((b, out) -> out.sendObject(b));
+	}
+
+	@Test
+	void testIssue825SendHeaders() {
+		doTestIssue825_2((b, out) -> {
+			b.release();
+			return out.header(HttpHeaderNames.CONTENT_LENGTH, "0").sendHeaders();
+		});
+	}
+
+	private void doTestIssue825_2(BiFunction<ByteBuf, HttpServerResponse, Publisher<Void>> serverFn) {
 		int port1 = SocketUtils.findAvailableTcpPort();
 		int port2 = SocketUtils.findAvailableTcpPort();
 
 		AtomicReference<Throwable> error = new AtomicReference<>();
+		AtomicReference<Throwable> bufferReleasedError = new AtomicReference<>();
 		DisposableServer server1 = null;
 		DisposableServer server2 = null;
+		Sinks.Empty<Void> bufferReleased = Sinks.empty();
 		try {
 			server1 =
 					createServer(port1)
@@ -519,11 +626,33 @@ class HttpCompressionClientServerTests extends BaseHttpTest {
 					          })
 					          .handle((in, out) ->
 					              createClient(port2)
+					                        .doOnChannelInit((obs, ch, addr) ->
+					                            ch.pipeline().addAfter(HttpCodec, "doTestIssue825_2", new ChannelInboundHandlerAdapter() {
+					                                @Override
+					                                public void channelRead(ChannelHandlerContext ctx, Object msg) {
+					                                    LastHttpContent last = null;
+					                                    int expectedRefCount = 0;
+					                                    if (msg instanceof LastHttpContent) {
+					                                        last = (LastHttpContent) msg;
+					                                        expectedRefCount = last.content().refCnt() - 1;
+					                                    }
+					                                    ctx.fireChannelRead(msg);
+					                                    if (last != null) {
+					                                        if (last.content().refCnt() == expectedRefCount) {
+					                                            bufferReleased.tryEmitEmpty();
+					                                        }
+					                                        else {
+					                                            bufferReleased.tryEmitError(new RuntimeException("The buffer is not released!"));
+					                                        }
+					                                    }
+					                                }
+					                            }))
 					                        .get()
 					                        .uri("/")
 					                        .responseContent()
 					                        .retain()
-					                        .flatMap(b -> out.send(Mono.just(b)))
+					                        .doOnError(bufferReleasedError::set)
+					                        .flatMap(b -> serverFn.apply(b, out))
 					                        .doOnError(error::set))
 					          .bindNow();
 
@@ -537,12 +666,19 @@ class HttpCompressionClientServerTests extends BaseHttpTest {
 			                  .compress(true)
 			                  .get()
 			                  .uri("/")
-			                  .responseContent())
-			            .expectError()
+			                  .response((res, bytes) -> Mono.just(res.status().code())))
+			            .expectNext(500)
+			            .expectComplete()
 			            .verify(Duration.ofSeconds(30));
+
+			bufferReleased.asMono()
+			              .as(StepVerifier::create)
+			              .expectComplete()
+			              .verify(Duration.ofSeconds(5));
 
 			assertThat(error.get()).isNotNull()
 			                       .isInstanceOf(RuntimeException.class);
+			assertThat(bufferReleasedError.get()).isNull();
 		}
 		finally {
 			if (server1 != null) {

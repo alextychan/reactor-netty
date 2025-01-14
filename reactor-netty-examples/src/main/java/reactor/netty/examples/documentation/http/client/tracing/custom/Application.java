@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2022-2024 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,10 +16,10 @@
 package reactor.netty.examples.documentation.http.client.tracing.custom;
 
 import brave.Tracing;
-import brave.handler.SpanHandler;
 import brave.propagation.StrictCurrentTraceContext;
 import brave.sampler.Sampler;
 import io.micrometer.context.ContextSnapshot;
+import io.micrometer.context.ContextSnapshotFactory;
 import io.micrometer.tracing.CurrentTraceContext;
 import io.micrometer.tracing.Tracer;
 import io.micrometer.tracing.brave.bridge.BraveBaggageManager;
@@ -35,8 +35,7 @@ import reactor.netty.NettyPipeline;
 import reactor.netty.http.client.HttpClient;
 import reactor.netty.http.observability.ReactorNettyPropagatingSenderTracingObservationHandler;
 import reactor.netty.observability.ReactorNettyTracingObservationHandler;
-import zipkin2.reporter.AsyncReporter;
-import zipkin2.reporter.brave.ZipkinSpanHandler;
+import zipkin2.reporter.brave.AsyncZipkinSpanHandler;
 import zipkin2.reporter.urlconnection.URLConnectionSender;
 
 import static reactor.netty.Metrics.OBSERVATION_REGISTRY;
@@ -75,7 +74,7 @@ public class Application {
 		@Override
 		@SuppressWarnings({"FutureReturnValueIgnored", "try"})
 		public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) {
-			try (ContextSnapshot.Scope scope = ContextSnapshot.captureFrom(ctx.channel()).setThreadLocals()) {
+			try (ContextSnapshot.Scope scope = ContextSnapshotFactory.builder().build().setThreadLocalsFrom(ctx.channel())) {
 				System.out.println("Current Observation in Scope: " + OBSERVATION_REGISTRY.getCurrentObservation());
 				//"FutureReturnValueIgnored" this is deliberate
 				ctx.write(msg, promise);
@@ -86,11 +85,11 @@ public class Application {
 
 	/**
 	 * This setup is based on
-	 * <a href="https://micrometer.io/docs/tracing#_micrometer_tracing_brave_setup">Micrometer Tracing Brave Setup</a>
+	 * <a href="https://micrometer.io/docs/tracing#_micrometer_tracing_brave_setup">Micrometer Tracing Brave Setup</a>.
 	 */
 	static void init() {
-		SpanHandler spanHandler = ZipkinSpanHandler
-				.create(AsyncReporter.create(URLConnectionSender.create("http://localhost:9411/api/v2/spans")));
+		AsyncZipkinSpanHandler spanHandler = AsyncZipkinSpanHandler
+				.create(URLConnectionSender.create("http://localhost:9411/api/v2/spans"));
 
 		StrictCurrentTraceContext braveCurrentTraceContext = StrictCurrentTraceContext.create();
 

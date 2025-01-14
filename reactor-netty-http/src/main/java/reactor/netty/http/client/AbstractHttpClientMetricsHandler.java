@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021-2022 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2021-2024 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -37,12 +37,17 @@ import java.util.function.Function;
 import static reactor.netty.ReactorNetty.format;
 
 /**
+ * {@link ChannelDuplexHandler} for handling {@link HttpClient} metrics.
+ *
  * @author Violeta Georgieva
  * @since 1.0.8
  */
 abstract class AbstractHttpClientMetricsHandler extends ChannelDuplexHandler {
 
 	private static final Logger log = Loggers.getLogger(AbstractHttpClientMetricsHandler.class);
+
+	final SocketAddress proxyAddress;
+	final SocketAddress remoteAddress;
 
 	String path;
 
@@ -64,7 +69,13 @@ abstract class AbstractHttpClientMetricsHandler extends ChannelDuplexHandler {
 
 	final Function<String, String> uriTagValue;
 
-	protected AbstractHttpClientMetricsHandler(@Nullable Function<String, String> uriTagValue) {
+	int lastReadSeq;
+
+	int lastWriteSeq;
+
+	protected AbstractHttpClientMetricsHandler(SocketAddress remoteAddress, @Nullable SocketAddress proxyAddress, @Nullable Function<String, String> uriTagValue) {
+		this.proxyAddress = proxyAddress;
+		this.remoteAddress = remoteAddress;
 		this.uriTagValue = uriTagValue;
 	}
 
@@ -76,8 +87,12 @@ abstract class AbstractHttpClientMetricsHandler extends ChannelDuplexHandler {
 		this.dataSentTime = copy.dataSentTime;
 		this.method = copy.method;
 		this.path = copy.path;
+		this.proxyAddress = copy.proxyAddress;
+		this.remoteAddress = copy.remoteAddress;
 		this.status = copy.status;
 		this.uriTagValue = copy.uriTagValue;
+		this.lastWriteSeq = copy.lastWriteSeq;
+		this.lastReadSeq = copy.lastReadSeq;
 	}
 
 	@Override
@@ -91,25 +106,29 @@ abstract class AbstractHttpClientMetricsHandler extends ChannelDuplexHandler {
 			dataSent += extractProcessedDataFromBuffer(msg);
 
 			if (msg instanceof LastHttpContent) {
-				SocketAddress address = ctx.channel().remoteAddress();
+				int currentLastWriteSeq = lastWriteSeq;
 				promise.addListener(future -> {
 					try {
-						recordWrite(address);
+						// Record write, unless channelRead has already done it (because an early full response has been received)
+						if (currentLastWriteSeq == lastWriteSeq) {
+							lastWriteSeq = (lastWriteSeq + 1) & 0x7F_FF_FF_FF;
+							recordWrite(remoteAddress);
+						}
 					}
 					catch (RuntimeException e) {
+						// Allow request-response exchange to continue, unaffected by metrics problem
 						if (log.isWarnEnabled()) {
 							log.warn(format(ctx.channel(), "Exception caught while recording metrics."), e);
 						}
-						// Allow request-response exchange to continue, unaffected by metrics problem
 					}
 				});
 			}
 		}
 		catch (RuntimeException e) {
+			// Allow request-response exchange to continue, unaffected by metrics problem
 			if (log.isWarnEnabled()) {
 				log.warn(format(ctx.channel(), "Exception caught while recording metrics."), e);
 			}
-			// Allow request-response exchange to continue, unaffected by metrics problem
 		}
 
 		//"FutureReturnValueIgnored" this is deliberate
@@ -128,15 +147,22 @@ abstract class AbstractHttpClientMetricsHandler extends ChannelDuplexHandler {
 			dataReceived += extractProcessedDataFromBuffer(msg);
 
 			if (msg instanceof LastHttpContent) {
-				recordRead(ctx.channel());
+				// Detect if we have received an early response before the request has been fully flushed.
+				// In this case, invoke #recordWrite now (because next we will reset all class fields).
+				lastReadSeq = (lastReadSeq + 1) & 0x7F_FF_FF_FF;
+				if ((lastReadSeq > lastWriteSeq) || (lastReadSeq == 0 && lastWriteSeq == Integer.MAX_VALUE)) {
+					lastWriteSeq = (lastWriteSeq + 1) & 0x7F_FF_FF_FF;
+					recordWrite(remoteAddress);
+				}
+				recordRead(ctx.channel(), remoteAddress);
 				reset();
 			}
 		}
 		catch (RuntimeException e) {
+			// Allow request-response exchange to continue, unaffected by metrics problem
 			if (log.isWarnEnabled()) {
 				log.warn(format(ctx.channel(), "Exception caught while recording metrics."), e);
 			}
-			// Allow request-response exchange to continue, unaffected by metrics problem
 		}
 
 		ctx.fireChannelRead(msg);
@@ -148,10 +174,10 @@ abstract class AbstractHttpClientMetricsHandler extends ChannelDuplexHandler {
 			recordException(ctx);
 		}
 		catch (RuntimeException e) {
+			// Allow request-response exchange to continue, unaffected by metrics problem
 			if (log.isWarnEnabled()) {
 				log.warn(format(ctx.channel(), "Exception caught while recording metrics."), e);
 			}
-			// Allow request-response exchange to continue, unaffected by metrics problem
 		}
 
 		ctx.fireExceptionCaught(cause);
@@ -163,11 +189,11 @@ abstract class AbstractHttpClientMetricsHandler extends ChannelDuplexHandler {
 		ChannelOperations<?, ?> channelOps = ChannelOperations.get(ctx.channel());
 		if (channelOps instanceof HttpClientOperations) {
 			HttpClientOperations ops = (HttpClientOperations) channelOps;
-			path = uriTagValue == null ? ops.path : uriTagValue.apply(ops.path);
+			path = uriTagValue == null ? resolvePath(ops) : uriTagValue.apply(resolvePath(ops));
 			contextView = ops.currentContextView();
 		}
 
-		startWrite(request, ctx.channel());
+		startWrite(request, ctx.channel(), remoteAddress);
 	}
 
 	private long extractProcessedDataFromBuffer(Object msg) {
@@ -183,29 +209,48 @@ abstract class AbstractHttpClientMetricsHandler extends ChannelDuplexHandler {
 	protected abstract HttpClientMetricsRecorder recorder();
 
 	protected void recordException(ChannelHandlerContext ctx) {
-		recorder().incrementErrorsCount(ctx.channel().remoteAddress(),
-				path != null ? path : resolveUri(ctx));
+		if (proxyAddress == null) {
+			recorder().incrementErrorsCount(remoteAddress, path != null ? path : resolveUri(ctx));
+		}
+		else {
+			recorder().incrementErrorsCount(remoteAddress, proxyAddress, path != null ? path : resolveUri(ctx));
+		}
 	}
 
-	protected void recordRead(Channel channel) {
-		SocketAddress address = channel.remoteAddress();
-		recorder().recordDataReceivedTime(address,
-				path, method, status,
-				Duration.ofNanos(System.nanoTime() - dataReceivedTime));
+	protected void recordRead(Channel channel, SocketAddress address) {
+		if (proxyAddress == null) {
+			recorder().recordDataReceivedTime(address, path, method, status,
+					Duration.ofNanos(System.nanoTime() - dataReceivedTime));
 
-		recorder().recordResponseTime(address,
-				path, method, status,
-				Duration.ofNanos(System.nanoTime() - dataSentTime));
+			recorder().recordResponseTime(address, path, method, status,
+					Duration.ofNanos(System.nanoTime() - dataSentTime));
 
-		recorder().recordDataReceived(address, path, dataReceived);
+			recorder().recordDataReceived(address, path, dataReceived);
+		}
+		else {
+			recorder().recordDataReceivedTime(address, proxyAddress, path, method, status,
+					Duration.ofNanos(System.nanoTime() - dataReceivedTime));
+
+			recorder().recordResponseTime(address, proxyAddress, path, method, status,
+					Duration.ofNanos(System.nanoTime() - dataSentTime));
+
+			recorder().recordDataReceived(address, proxyAddress, path, dataReceived);
+		}
 	}
 
 	protected void recordWrite(SocketAddress address) {
-		recorder().recordDataSentTime(address,
-				path, method,
-				Duration.ofNanos(System.nanoTime() - dataSentTime));
+		if (proxyAddress == null) {
+			recorder().recordDataSentTime(address, path, method,
+					Duration.ofNanos(System.nanoTime() - dataSentTime));
 
-		recorder().recordDataSent(address, path, dataSent);
+			recorder().recordDataSent(address, path, dataSent);
+		}
+		else {
+			recorder().recordDataSentTime(address, proxyAddress, path, method,
+					Duration.ofNanos(System.nanoTime() - dataSentTime));
+
+			recorder().recordDataSent(address, proxyAddress, path, dataSent);
+		}
 	}
 
 	protected void reset() {
@@ -217,14 +262,24 @@ abstract class AbstractHttpClientMetricsHandler extends ChannelDuplexHandler {
 		dataSent = 0;
 		dataReceivedTime = 0;
 		dataSentTime = 0;
+		// don't reset lastWriteSeq and lastReadSeq, which must be incremented forever
 	}
 
 	protected void startRead(HttpResponse msg) {
 		dataReceivedTime = System.nanoTime();
 	}
 
-	protected void startWrite(HttpRequest msg, Channel channel) {
+	protected void startWrite(HttpRequest msg, Channel channel, SocketAddress address) {
 		dataSentTime = System.nanoTime();
+	}
+
+	static String resolvePath(HttpClientOperations ops) {
+		try {
+			return ops.fullPath();
+		}
+		catch (Exception e) {
+			return "/bad-request";
+		}
 	}
 
 	private String resolveUri(ChannelHandlerContext ctx) {

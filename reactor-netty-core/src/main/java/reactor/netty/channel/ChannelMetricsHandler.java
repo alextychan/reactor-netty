@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019-2022 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2019-2024 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,6 +20,7 @@ import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.ChannelOutboundHandlerAdapter;
 import io.netty.channel.ChannelPromise;
+import io.netty.handler.ssl.SniCompletionEvent;
 import io.netty.handler.ssl.SslHandler;
 import reactor.util.annotation.Nullable;
 
@@ -45,12 +46,12 @@ public class ChannelMetricsHandler extends AbstractChannelMetricsHandler {
 
 	@Override
 	public ChannelHandler connectMetricsHandler() {
-		return new ConnectMetricsHandler(recorder());
+		return new ConnectMetricsHandler(recorder(), proxyAddress);
 	}
 
 	@Override
 	public ChannelHandler tlsMetricsHandler() {
-		return new TlsMetricsHandler(recorder);
+		return new TlsMetricsHandler(recorder, remoteAddress, proxyAddress);
 	}
 
 	@Override
@@ -60,9 +61,11 @@ public class ChannelMetricsHandler extends AbstractChannelMetricsHandler {
 
 	static final class ConnectMetricsHandler extends ChannelOutboundHandlerAdapter {
 
+		final SocketAddress proxyAddress;
 		final ChannelMetricsRecorder recorder;
 
-		ConnectMetricsHandler(ChannelMetricsRecorder recorder) {
+		ConnectMetricsHandler(ChannelMetricsRecorder recorder, @Nullable SocketAddress proxyAddress) {
+			this.proxyAddress = proxyAddress;
 			this.recorder = recorder;
 		}
 
@@ -74,37 +77,81 @@ public class ChannelMetricsHandler extends AbstractChannelMetricsHandler {
 			promise.addListener(future -> {
 				ctx.pipeline().remove(this);
 
-				recorder.recordConnectTime(
-						remoteAddress,
-						Duration.ofNanos(System.nanoTime() - connectTimeStart),
-						future.isSuccess() ? SUCCESS : ERROR);
+				if (proxyAddress == null) {
+					recorder.recordConnectTime(
+							remoteAddress,
+							Duration.ofNanos(System.nanoTime() - connectTimeStart),
+							future.isSuccess() ? SUCCESS : ERROR);
+				}
+				else {
+					recorder.recordConnectTime(
+							remoteAddress,
+							proxyAddress,
+							Duration.ofNanos(System.nanoTime() - connectTimeStart),
+							future.isSuccess() ? SUCCESS : ERROR);
+				}
 			});
 		}
 	}
 
 	static class TlsMetricsHandler extends ChannelInboundHandlerAdapter {
+
+		protected final SocketAddress proxyAddress;
 		protected final ChannelMetricsRecorder recorder;
-		TlsMetricsHandler(ChannelMetricsRecorder recorder) {
+		protected final SocketAddress remoteAddress;
+
+		boolean listenerAdded;
+
+		TlsMetricsHandler(ChannelMetricsRecorder recorder, @Nullable SocketAddress remoteAddress,
+				@Nullable SocketAddress proxyAddress) {
+			this.proxyAddress = proxyAddress;
 			this.recorder = recorder;
+			this.remoteAddress = remoteAddress;
 		}
 
 		@Override
 		public void channelActive(ChannelHandlerContext ctx) {
-			long tlsHandshakeTimeStart = System.nanoTime();
-			ctx.pipeline().get(SslHandler.class)
-					.handshakeFuture()
-					.addListener(f -> {
-						ctx.pipeline().remove(this);
-						recordTlsHandshakeTime(ctx, tlsHandshakeTimeStart, f.isSuccess() ? SUCCESS : ERROR);
-					});
+			addListener(ctx);
 			ctx.fireChannelActive();
 		}
 
+		@Override
+		public void userEventTriggered(ChannelHandlerContext ctx, Object evt) {
+			if (evt instanceof SniCompletionEvent) {
+				addListener(ctx);
+			}
+			ctx.fireUserEventTriggered(evt);
+		}
+
 		protected void recordTlsHandshakeTime(ChannelHandlerContext ctx, long tlsHandshakeTimeStart, String status) {
-			recorder.recordTlsHandshakeTime(
-					ctx.channel().remoteAddress(),
-					Duration.ofNanos(System.nanoTime() - tlsHandshakeTimeStart),
-					status);
+			if (proxyAddress == null) {
+				recorder.recordTlsHandshakeTime(
+						remoteAddress != null ? remoteAddress : ctx.channel().remoteAddress(),
+						Duration.ofNanos(System.nanoTime() - tlsHandshakeTimeStart),
+						status);
+			}
+			else {
+				recorder.recordTlsHandshakeTime(
+						remoteAddress != null ? remoteAddress : ctx.channel().remoteAddress(),
+						proxyAddress,
+						Duration.ofNanos(System.nanoTime() - tlsHandshakeTimeStart),
+						status);
+			}
+		}
+
+		private void addListener(ChannelHandlerContext ctx) {
+			if (!listenerAdded) {
+				SslHandler sslHandler = ctx.pipeline().get(SslHandler.class);
+				if (sslHandler != null) {
+					listenerAdded = true;
+					long tlsHandshakeTimeStart = System.nanoTime();
+					sslHandler.handshakeFuture()
+					          .addListener(f -> {
+					              ctx.pipeline().remove(this);
+					              recordTlsHandshakeTime(ctx, tlsHandshakeTimeStart, f.isSuccess() ? SUCCESS : ERROR);
+					          });
+				}
+			}
 		}
 	}
 }

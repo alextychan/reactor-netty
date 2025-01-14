@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2021 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2011-2024 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -66,7 +66,7 @@ import static reactor.netty.ReactorNetty.format;
 public abstract class TcpServer extends ServerTransport<TcpServer, TcpServerConfig> {
 
 	/**
-	 * Prepare a {@link TcpServer}
+	 * Prepare a {@link TcpServer}.
 	 *
 	 * @return a new {@link TcpServer}
 	 */
@@ -105,7 +105,7 @@ public abstract class TcpServer extends ServerTransport<TcpServer, TcpServerConf
 	}
 
 	/**
-	 * Attaches an I/O handler to react on a connected client
+	 * Attaches an I/O handler to react on a connected client.
 	 *
 	 * @param handler an I/O handler that can dispose underlying connection when
 	 * {@link Publisher} terminates.
@@ -133,7 +133,7 @@ public abstract class TcpServer extends ServerTransport<TcpServer, TcpServerConf
 	}
 
 	/**
-	 * Removes any previously applied SSL configuration customization
+	 * Removes any previously applied SSL configuration customization.
 	 *
 	 * @return a new {@link TcpServer}
 	 */
@@ -146,6 +146,13 @@ public abstract class TcpServer extends ServerTransport<TcpServer, TcpServerConf
 		return this;
 	}
 
+	/**
+	 * The port to which this server should bind.
+	 * If a port is not specified, the system picks up an ephemeral port.
+	 *
+	 * @param port The port to bind to.
+	 * @return a new {@link TcpServer}
+	 */
 	@Override
 	public TcpServer port(int port) {
 		return super.port(port);
@@ -168,9 +175,13 @@ public abstract class TcpServer extends ServerTransport<TcpServer, TcpServerConf
 
 	/**
 	 * Apply an SSL configuration customization via the passed builder. The builder
-	 * will produce the {@link SslContext} to be passed to with a default value of
-	 * {@code 10} seconds handshake timeout unless the environment property {@code
-	 * reactor.netty.tcp.sslHandshakeTimeout} is set.
+	 * will produce the {@link SslContext} to be passed to with a default value of:
+	 * <ul>
+	 *     <li>{@code 10} seconds handshake timeout unless the environment property
+	 *     {@code reactor.netty.tcp.sslHandshakeTimeout} is set.</li>
+	 *     <li>{@code 3} seconds close_notify flush timeout</li>
+	 *     <li>{@code 0} second close_notify read timeout</li>
+	 * </ul>
 	 *
 	 * If {@link SelfSignedCertificate} needs to be used, the sample below can be
 	 * used. Note that {@link SelfSignedCertificate} should not be used in production.

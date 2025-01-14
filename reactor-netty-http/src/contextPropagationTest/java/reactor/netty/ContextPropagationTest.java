@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2022-2024 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -30,8 +30,11 @@ import io.netty.handler.codec.http2.Http2StreamChannel;
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
 import io.netty.handler.ssl.util.SelfSignedCertificate;
 import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
+import reactor.core.publisher.Hooks;
 import reactor.core.publisher.Mono;
 import reactor.netty.channel.ChannelOperations;
 import reactor.netty.http.Http11SslContextSpec;
@@ -44,15 +47,26 @@ import reactor.test.StepVerifier;
 
 import java.nio.charset.Charset;
 import java.time.Duration;
+import java.util.concurrent.atomic.AtomicReference;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static reactor.netty.ReactorNetty.getChannelContext;
 
 class ContextPropagationTest {
 	static final ConnectionProvider provider = ConnectionProvider.create("testContextPropagation", 1);
 	static final ContextRegistry registry = ContextRegistry.getInstance();
 
+	static SelfSignedCertificate ssc;
+
+	HttpServer baseServer;
 	DisposableServer disposableServer;
-	SelfSignedCertificate ssc;
+	Http2SslContextSpec serverCtx;
+
+
+	@BeforeAll
+	static void createSelfSignedCertificate() throws Exception {
+		ssc = new SelfSignedCertificate();
+	}
 
 	@AfterAll
 	static void disposePool() {
@@ -60,20 +74,22 @@ class ContextPropagationTest {
 		        .block(Duration.ofSeconds(30));
 	}
 
-	@ParameterizedTest
-	@MethodSource("httpClientCombinations")
-	void testContextPropagation(HttpClient client) throws Exception {
-		ssc = new SelfSignedCertificate();
-		Http2SslContextSpec serverCtxHttp = Http2SslContextSpec.forServer(ssc.certificate(), ssc.privateKey());
-		HttpServer server =
+	@BeforeEach
+	void setUp() {
+		serverCtx = Http2SslContextSpec.forServer(ssc.certificate(), ssc.privateKey());
+		baseServer =
 				HttpServer.create()
 				          .wiretap(true)
 				          .httpRequestDecoder(spec -> spec.h2cMaxContentLength(256))
 				          .handle((in, out) -> out.send(in.receive().retain()));
+	}
 
-		server = client.configuration().sslProvider() != null ?
-				server.secure(spec -> spec.sslContext(serverCtxHttp)).protocol(HttpProtocol.HTTP11, HttpProtocol.H2) :
-				server.protocol(HttpProtocol.HTTP11, HttpProtocol.H2C);
+	@ParameterizedTest
+	@MethodSource("httpClientCombinations")
+	void testContextPropagation(HttpClient client) {
+		HttpServer server = client.configuration().sslProvider() != null ?
+				baseServer.secure(spec -> spec.sslContext(serverCtx)).protocol(HttpProtocol.HTTP11, HttpProtocol.H2) :
+				baseServer.protocol(HttpProtocol.HTTP11, HttpProtocol.H2C);
 
 		disposableServer = server.bindNow();
 
@@ -99,6 +115,42 @@ class ContextPropagationTest {
 		finally {
 			TestThreadLocalHolder.reset();
 			registry.removeThreadLocalAccessor(TestThreadLocalAccessor.KEY);
+			disposableServer.disposeNow();
+		}
+	}
+
+	@ParameterizedTest
+	@MethodSource("httpClientCombinations")
+	void testAutomaticContextPropagation(HttpClient client) {
+		HttpServer server = client.configuration().sslProvider() != null ?
+				baseServer.secure(spec -> spec.sslContext(serverCtx)).protocol(HttpProtocol.HTTP11, HttpProtocol.H2) :
+				baseServer.protocol(HttpProtocol.HTTP11, HttpProtocol.H2C);
+
+		disposableServer = server.bindNow();
+
+		try {
+			Hooks.enableAutomaticContextPropagation();
+
+			registry.registerThreadLocalAccessor(new TestThreadLocalAccessor());
+
+			TestThreadLocalHolder.value("First");
+
+			HttpClient.ResponseReceiver<?> responseReceiver =
+					client.port(disposableServer.port())
+					      .wiretap(true)
+					      .post()
+					      .uri("/")
+					      .send(ByteBufMono.fromString(Mono.just("test")));
+
+			response(responseReceiver);
+			responseConnection(responseReceiver);
+			responseContent(responseReceiver);
+			responseSingle(responseReceiver);
+		}
+		finally {
+			TestThreadLocalHolder.reset();
+			registry.removeThreadLocalAccessor(TestThreadLocalAccessor.KEY);
+			Hooks.disableAutomaticContextPropagation();
 			disposableServer.disposeNow();
 		}
 	}
@@ -143,6 +195,45 @@ class ContextPropagationTest {
 		};
 	}
 
+	static void response(HttpClient.ResponseReceiver<?> responseReceiver) {
+		AtomicReference<String> threadLocal = new AtomicReference<>();
+		responseReceiver.response()
+		                .doOnNext(s -> threadLocal.set(TestThreadLocalHolder.value()))
+		                .block(Duration.ofSeconds(5));
+
+		assertThat(threadLocal.get()).isNotNull().isEqualTo("First");
+	}
+
+	static void responseConnection(HttpClient.ResponseReceiver<?> responseReceiver) {
+		AtomicReference<String> threadLocal = new AtomicReference<>();
+		responseReceiver.responseConnection((res, conn) -> conn.inbound().receive().aggregate().asString())
+		                .next()
+		                .doOnNext(s -> threadLocal.set(TestThreadLocalHolder.value()))
+		                .block(Duration.ofSeconds(5));
+
+		assertThat(threadLocal.get()).isNotNull().isEqualTo("First");
+	}
+
+	static void responseContent(HttpClient.ResponseReceiver<?> responseReceiver) {
+		AtomicReference<String> threadLocal = new AtomicReference<>();
+		responseReceiver.responseContent()
+		                .aggregate()
+		                .asString()
+		                .doOnNext(s -> threadLocal.set(TestThreadLocalHolder.value()))
+		                .block(Duration.ofSeconds(5));
+
+		assertThat(threadLocal.get()).isNotNull().isEqualTo("First");
+	}
+
+	static void responseSingle(HttpClient.ResponseReceiver<?> responseReceiver) {
+		AtomicReference<String> threadLocal = new AtomicReference<>();
+		responseReceiver.responseSingle((res, bytes) -> bytes.asString())
+		                .doOnNext(s -> threadLocal.set(TestThreadLocalHolder.value()))
+		                .block(Duration.ofSeconds(5));
+
+		assertThat(threadLocal.get()).isNotNull().isEqualTo("First");
+	}
+
 	static void sendRequest(HttpClient client, String expectation) {
 		client.post()
 		      .uri("/")
@@ -182,7 +273,7 @@ class ContextPropagationTest {
 				TestThreadLocalHolder.value(threadLocalValue);
 				if (msg instanceof FullHttpRequest) {
 					ByteBuf buffer1;
-					try (ContextSnapshot.Scope scope = ContextSnapshot.captureFrom(ctx.channel()).setThreadLocals()) {
+					try (ContextSnapshot.Scope scope = ContextSnapshot.setAllThreadLocalsFrom(ctx.channel())) {
 						buffer1 = Unpooled.wrappedBuffer(TestThreadLocalHolder.value().getBytes(Charset.defaultCharset()));
 					}
 					ByteBuf buffer2 = Unpooled.wrappedBuffer(TestThreadLocalHolder.value().getBytes(Charset.defaultCharset()));

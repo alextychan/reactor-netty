@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2021 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2011-2024 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -65,7 +65,7 @@ import static reactor.netty.ReactorNetty.format;
 public abstract class UdpServer extends Transport<UdpServer, UdpServerConfig> {
 
 	/**
-	 * Prepare a {@link UdpServer}
+	 * Prepare a {@link UdpServer}.
 	 *
 	 * @return a {@link UdpServer}
 	 */
@@ -173,7 +173,7 @@ public abstract class UdpServer extends Transport<UdpServer, UdpServerConfig> {
 	}
 
 	/**
-	 * Attach an IO handler to react on connected client
+	 * Attach an IO handler to react on connected client.
 	 *
 	 * @param handler an IO handler that can dispose underlying connection when {@link
 	 * Publisher} terminates.
@@ -217,6 +217,8 @@ public abstract class UdpServer extends Transport<UdpServer, UdpServerConfig> {
 
 	/**
 	 * The port to which this server should bind.
+	 * If a port is not specified, the default port {@code 12012} is used.
+	 * <p><strong>Note:</strong> The port can be specified also with {@code PORT} environment variable.
 	 *
 	 * @param port The port to bind to.
 	 * @return a new {@link UdpServer} reference

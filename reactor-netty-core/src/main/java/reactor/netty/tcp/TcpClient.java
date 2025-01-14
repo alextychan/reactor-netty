@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2021 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2011-2024 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -74,7 +74,7 @@ import static reactor.netty.ReactorNetty.format;
 public abstract class TcpClient extends ClientTransport<TcpClient, TcpClientConfig> {
 
 	/**
-	 * Prepare a pooled {@link TcpClient}
+	 * Prepare a pooled {@link TcpClient}.
 	 *
 	 * @return a {@link TcpClient}
 	 */
@@ -84,7 +84,7 @@ public abstract class TcpClient extends ClientTransport<TcpClient, TcpClientConf
 
 
 	/**
-	 * Prepare a {@link TcpClient}
+	 * Prepare a {@link TcpClient}.
 	 *
 	 * @param provider a {@link ConnectionProvider} to acquire connections
 	 *
@@ -96,7 +96,7 @@ public abstract class TcpClient extends ClientTransport<TcpClient, TcpClientConf
 	}
 
 	/**
-	 * Prepare a non pooled {@link TcpClient}
+	 * Prepare a non pooled {@link TcpClient}.
 	 *
 	 * @return a {@link TcpClient}
 	 */
@@ -219,7 +219,7 @@ public abstract class TcpClient extends ClientTransport<TcpClient, TcpClientConf
 	}
 
 	/**
-	 * Attach an IO handler to react on connected client
+	 * Attach an IO handler to react on connected client.
 	 *
 	 * @param handler an IO handler that can dispose underlying connection when {@link
 	 * Publisher} terminates.
@@ -252,7 +252,7 @@ public abstract class TcpClient extends ClientTransport<TcpClient, TcpClientConf
 	}
 
 	/**
-	 * Remove any previously applied SSL configuration customization
+	 * Remove any previously applied SSL configuration customization.
 	 *
 	 * @return a new {@link TcpClient}
 	 */
@@ -275,6 +275,14 @@ public abstract class TcpClient extends ClientTransport<TcpClient, TcpClientConf
 		return super.option(key, value);
 	}
 
+	/**
+	 * The port to which this client should connect.
+	 * If a port is not specified, the default port {@code 12012} is used.
+	 * <p><strong>Note:</strong> The port can be specified also with {@code PORT} environment variable.
+	 *
+	 * @param port the port to connect to
+	 * @return a new {@link TcpClient}
+	 */
 	@Override
 	public TcpClient port(int port) {
 		return super.port(port);
@@ -312,9 +320,13 @@ public abstract class TcpClient extends ClientTransport<TcpClient, TcpClientConf
 
 	/**
 	 * Enable default sslContext support. The default {@link SslContext} will be
-	 * assigned to
-	 * with a default value of {@code 10} seconds handshake timeout unless
-	 * the environment property {@code reactor.netty.tcp.sslHandshakeTimeout} is set.
+	 * assigned to with a default value of:
+	 * <ul>
+	 *     <li>{@code 10} seconds handshake timeout unless the environment property
+	 *     {@code reactor.netty.tcp.sslHandshakeTimeout} is set.</li>
+	 *     <li>{@code 3} seconds close_notify flush timeout</li>
+	 *     <li>{@code 0} second close_notify read timeout</li>
+	 * </ul>
 	 *
 	 * @return a new {@link TcpClient}
 	 */
@@ -326,9 +338,13 @@ public abstract class TcpClient extends ClientTransport<TcpClient, TcpClientConf
 
 	/**
 	 * Apply an SSL configuration customization via the passed builder. The builder
-	 * will produce the {@link SslContext} to be passed to with a default value of
-	 * {@code 10} seconds handshake timeout unless the environment property {@code
-	 * reactor.netty.tcp.sslHandshakeTimeout} is set.
+	 * will produce the {@link SslContext} to be passed to with a default value of:
+	 * <ul>
+	 *     <li>{@code 10} seconds handshake timeout unless the environment property
+	 *     {@code reactor.netty.tcp.sslHandshakeTimeout} is set.</li>
+	 *     <li>{@code 3} seconds close_notify flush timeout</li>
+	 *     <li>{@code 0} second close_notify read timeout</li>
+	 * </ul>
 	 *
 	 * @param sslProviderBuilder builder callback for further customization of SslContext.
 	 *

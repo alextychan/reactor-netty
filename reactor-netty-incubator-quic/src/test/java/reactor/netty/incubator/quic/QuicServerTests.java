@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021-2023 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2021-2024 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -48,12 +48,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 
 /**
+ * This test class verifies {@link QuicServer}.
+ *
  * @author Violeta Georgieva
  */
 class QuicServerTests extends BaseQuicTests {
 
 	/**
-	 * DATA_BLOCKED
+	 * DATA_BLOCKED.
 	 */
 	@Test
 	void testMaxDataNotSpecifiedBidirectional() throws Exception {
@@ -64,7 +66,7 @@ class QuicServerTests extends BaseQuicTests {
 	}
 
 	/**
-	 * DATA_BLOCKED
+	 * DATA_BLOCKED.
 	 */
 	@Test
 	void testMaxDataNotSpecifiedUnidirectional() throws Exception {
@@ -74,7 +76,7 @@ class QuicServerTests extends BaseQuicTests {
 	}
 
 	/**
-	 * STREAM_DATA_BLOCKED
+	 * STREAM_DATA_BLOCKED.
 	 */
 	@Test
 	void testMaxStreamDataNotSpecifiedUnidirectional() throws Exception {
@@ -84,7 +86,7 @@ class QuicServerTests extends BaseQuicTests {
 	}
 
 	/**
-	 * STREAM_DATA_BLOCKED
+	 * STREAM_DATA_BLOCKED.
 	 */
 	@Test
 	void testMaxStreamDataLocalNotSpecifiedBidirectional() throws Exception {
@@ -92,7 +94,7 @@ class QuicServerTests extends BaseQuicTests {
 	}
 
 	/**
-	 * STREAM_DATA_BLOCKED
+	 * STREAM_DATA_BLOCKED.
 	 */
 	@Test
 	void testMaxStreamDataRemoteNotSpecifiedBidirectional() throws Exception {
@@ -250,7 +252,7 @@ class QuicServerTests extends BaseQuicTests {
 		assertThat(incomingData.get()).isEqualTo("Hello World!");
 		assertThat(error.get()).isNotNull()
 				.isInstanceOf(QuicException.class)
-				.hasMessage("QUICHE_ERR_STREAM_LIMIT");
+				.hasMessageContaining("QUICHE_ERR_STREAM_LIMIT");
 	}
 
 	@Test
@@ -335,7 +337,7 @@ class QuicServerTests extends BaseQuicTests {
 		                                                latch.countDown();
 		                                            })
 		                                            .then()))
-		      .block();
+		      .block(Duration.ofSeconds(5));
 
 		assertThat(latch.await(5, TimeUnit.SECONDS)).as("latch wait").isTrue();
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2021 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2011-2024 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -26,6 +26,8 @@ import reactor.netty.http.client.HttpClient;
 import reactor.test.StepVerifier;
 
 /**
+ * This test class verifies HTTP errors.
+ *
  * @author tokuhirom
  */
 class HttpErrorTests extends BaseHttpTest {
@@ -48,6 +50,7 @@ class HttpErrorTests extends BaseHttpTest {
 		                             .asString(StandardCharsets.UTF_8)
 		                             .collectList())
 		            .expectNextMatches(List::isEmpty)
-		            .verifyComplete();
+		            .expectComplete()
+		            .verify(Duration.ofSeconds(5));
 	}
 }

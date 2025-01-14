@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2021 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,8 +17,12 @@ package reactor.netty.examples.http.echo;
 
 import io.netty.handler.ssl.util.SelfSignedCertificate;
 import reactor.netty.http.Http11SslContextSpec;
+import reactor.netty.http.Http2SslContextSpec;
+import reactor.netty.http.Http3SslContextSpec;
 import reactor.netty.http.HttpProtocol;
 import reactor.netty.http.server.HttpServer;
+
+import java.time.Duration;
 
 import static io.netty.handler.codec.http.HttpHeaderNames.CONTENT_TYPE;
 import static io.netty.handler.codec.http.HttpHeaderValues.TEXT_PLAIN;
@@ -35,6 +39,7 @@ public final class EchoServer {
 	static final boolean WIRETAP = System.getProperty("wiretap") != null;
 	static final boolean COMPRESS = System.getProperty("compress") != null;
 	static final boolean HTTP2 = System.getProperty("http2") != null;
+	static final boolean HTTP3 = System.getProperty("http3") != null;
 
 	public static void main(String[] args) throws Exception {
 		HttpServer server =
@@ -48,12 +53,29 @@ public final class EchoServer {
 
 		if (SECURE) {
 			SelfSignedCertificate ssc = new SelfSignedCertificate();
-			server = server.secure(
-					spec -> spec.sslContext(Http11SslContextSpec.forServer(ssc.certificate(), ssc.privateKey())));
+			if (HTTP2) {
+				server = server.secure(spec -> spec.sslContext(Http2SslContextSpec.forServer(ssc.certificate(), ssc.privateKey())));
+			}
+			else if (HTTP3) {
+				server = server.secure(spec -> spec.sslContext(Http3SslContextSpec.forServer(ssc.key(), null, ssc.cert())));
+			}
+			else {
+				server = server.secure(spec -> spec.sslContext(Http11SslContextSpec.forServer(ssc.certificate(), ssc.privateKey())));
+			}
 		}
 
 		if (HTTP2) {
 			server = server.protocol(HttpProtocol.H2);
+		}
+
+		if (HTTP3) {
+			server =
+					server.protocol(HttpProtocol.HTTP3)
+					      .http3Settings(spec -> spec.idleTimeout(Duration.ofSeconds(5))
+					                                 .maxData(10000000)
+					                                 .maxStreamDataBidirectionalLocal(1000000)
+					                                 .maxStreamDataBidirectionalRemote(1000000)
+					                                 .maxStreamsBidirectional(100));
 		}
 
 		server.bindNow()

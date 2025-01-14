@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021-2022 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2021-2024 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,12 +18,15 @@ package reactor.netty.http.client;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandlerContext;
 import reactor.util.annotation.Nullable;
+import reactor.util.context.ContextView;
 
 import java.net.SocketAddress;
 import java.time.Duration;
 import java.util.function.Function;
 
 /**
+ * {@link AbstractHttpClientMetricsHandler} that propagates {@link ContextView}.
+ *
  * @author Violeta Georgieva
  * @since 1.0.8
  */
@@ -32,8 +35,10 @@ final class ContextAwareHttpClientMetricsHandler extends AbstractHttpClientMetri
 	final ContextAwareHttpClientMetricsRecorder recorder;
 
 	ContextAwareHttpClientMetricsHandler(ContextAwareHttpClientMetricsRecorder recorder,
+			SocketAddress remoteAddress,
+			@Nullable SocketAddress proxyAddress,
 			@Nullable Function<String, String> uriTagValue) {
-		super(uriTagValue);
+		super(remoteAddress, proxyAddress, uriTagValue);
 		this.recorder = recorder;
 	}
 
@@ -50,7 +55,12 @@ final class ContextAwareHttpClientMetricsHandler extends AbstractHttpClientMetri
 	@Override
 	protected void recordException(ChannelHandlerContext ctx) {
 		if (contextView != null) {
-			recorder().incrementErrorsCount(contextView, ctx.channel().remoteAddress(), path);
+			if (proxyAddress == null) {
+				recorder().incrementErrorsCount(contextView, remoteAddress, path);
+			}
+			else {
+				recorder().incrementErrorsCount(contextView, remoteAddress, proxyAddress, path);
+			}
 		}
 		else {
 			super.recordException(ctx);
@@ -60,11 +70,18 @@ final class ContextAwareHttpClientMetricsHandler extends AbstractHttpClientMetri
 	@Override
 	protected void recordWrite(SocketAddress address) {
 		if (contextView != null) {
-			recorder.recordDataSentTime(contextView, address,
-					path, method,
-					Duration.ofNanos(System.nanoTime() - dataSentTime));
+			if (proxyAddress == null) {
+				recorder.recordDataSentTime(contextView, address, path, method,
+						Duration.ofNanos(System.nanoTime() - dataSentTime));
 
-			recorder.recordDataSent(contextView, address, path, dataSent);
+				recorder.recordDataSent(contextView, address, path, dataSent);
+			}
+			else {
+				recorder.recordDataSentTime(contextView, address, proxyAddress, path, method,
+						Duration.ofNanos(System.nanoTime() - dataSentTime));
+
+				recorder.recordDataSent(contextView, address, proxyAddress, path, dataSent);
+			}
 		}
 		else {
 			super.recordWrite(address);
@@ -72,21 +89,29 @@ final class ContextAwareHttpClientMetricsHandler extends AbstractHttpClientMetri
 	}
 
 	@Override
-	protected void recordRead(Channel channel) {
+	protected void recordRead(Channel channel, SocketAddress address) {
 		if (contextView != null) {
-			SocketAddress address = channel.remoteAddress();
-			recorder.recordDataReceivedTime(contextView, address,
-					path, method, status,
-					Duration.ofNanos(System.nanoTime() - dataReceivedTime));
+			if (proxyAddress == null) {
+				recorder.recordDataReceivedTime(contextView, address, path, method, status,
+						Duration.ofNanos(System.nanoTime() - dataReceivedTime));
 
-			recorder.recordResponseTime(contextView, address,
-					path, method, status,
-					Duration.ofNanos(System.nanoTime() - dataSentTime));
+				recorder.recordResponseTime(contextView, address, path, method, status,
+						Duration.ofNanos(System.nanoTime() - dataSentTime));
 
-			recorder.recordDataReceived(contextView, address, path, dataReceived);
+				recorder.recordDataReceived(contextView, address, path, dataReceived);
+			}
+			else {
+				recorder.recordDataReceivedTime(contextView, address, proxyAddress, path, method, status,
+						Duration.ofNanos(System.nanoTime() - dataReceivedTime));
+
+				recorder.recordResponseTime(contextView, address, proxyAddress, path, method, status,
+						Duration.ofNanos(System.nanoTime() - dataSentTime));
+
+				recorder.recordDataReceived(contextView, address, proxyAddress, path, dataReceived);
+			}
 		}
 		else {
-			super.recordRead(channel);
+			super.recordRead(channel, address);
 		}
 	}
 }

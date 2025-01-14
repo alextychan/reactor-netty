@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2022-2024 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,6 +23,7 @@ import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandler;
 import io.netty.channel.ChannelOutboundHandler;
 import io.netty.channel.ChannelPromise;
+import io.netty.handler.ssl.SniCompletionEvent;
 import io.netty.handler.ssl.SslHandler;
 import reactor.netty.ReactorNetty;
 import reactor.netty.observability.ReactorNettyHandlerContext;
@@ -35,16 +36,19 @@ import java.util.function.Supplier;
 
 import static reactor.netty.Metrics.CONNECT_TIME;
 import static reactor.netty.Metrics.ERROR;
+import static reactor.netty.Metrics.NA;
 import static reactor.netty.Metrics.OBSERVATION_REGISTRY;
 import static reactor.netty.Metrics.SUCCESS;
 import static reactor.netty.Metrics.TLS_HANDSHAKE_TIME;
 import static reactor.netty.Metrics.UNKNOWN;
+import static reactor.netty.Metrics.formatSocketAddress;
 import static reactor.netty.Metrics.updateChannelContext;
 import static reactor.netty.channel.ConnectObservations.ConnectTimeHighCardinalityTags.NET_PEER_NAME;
 import static reactor.netty.channel.ConnectObservations.ConnectTimeHighCardinalityTags.NET_PEER_PORT;
 import static reactor.netty.channel.ConnectObservations.ConnectTimeHighCardinalityTags.REACTOR_NETTY_PROTOCOL;
 import static reactor.netty.channel.ConnectObservations.ConnectTimeHighCardinalityTags.REACTOR_NETTY_STATUS;
 import static reactor.netty.channel.ConnectObservations.ConnectTimeHighCardinalityTags.REACTOR_NETTY_TYPE;
+import static reactor.netty.channel.ConnectObservations.ConnectTimeLowCardinalityTags.PROXY_ADDRESS;
 import static reactor.netty.channel.ConnectObservations.ConnectTimeLowCardinalityTags.REMOTE_ADDRESS;
 import static reactor.netty.channel.ConnectObservations.ConnectTimeLowCardinalityTags.STATUS;
 
@@ -67,11 +71,11 @@ public final class MicrometerChannelMetricsHandler extends AbstractChannelMetric
 
 	@Override
 	public ChannelHandler connectMetricsHandler() {
-		return new ConnectMetricsHandler(recorder);
+		return new ConnectMetricsHandler(recorder, proxyAddress);
 	}
 	@Override
 	public ChannelHandler tlsMetricsHandler() {
-		return new TlsMetricsHandler(recorder, onServer);
+		return new TlsMetricsHandler(recorder, onServer, remoteAddress, proxyAddress);
 	}
 
 	@Override
@@ -87,6 +91,7 @@ public final class MicrometerChannelMetricsHandler extends AbstractChannelMetric
 		static final String CONTEXTUAL_NAME = "connect";
 		static final String TYPE = "client";
 
+		final String proxyAddress;
 		final MicrometerChannelMetricsRecorder recorder;
 
 		// remote address and status are not known beforehand
@@ -95,7 +100,8 @@ public final class MicrometerChannelMetricsHandler extends AbstractChannelMetric
 		String status = UNKNOWN;
 		ContextView parentContextView;
 
-		ConnectMetricsHandler(MicrometerChannelMetricsRecorder recorder) {
+		ConnectMetricsHandler(MicrometerChannelMetricsRecorder recorder, @Nullable SocketAddress proxyAddress) {
+			this.proxyAddress = formatSocketAddress(proxyAddress);
 			this.recorder = recorder;
 		}
 
@@ -106,7 +112,7 @@ public final class MicrometerChannelMetricsHandler extends AbstractChannelMetric
 
 		@Override
 		public Timer getTimer() {
-			return recorder.getConnectTimer(getName(), netPeerName + ":" + netPeerPort, status);
+			return recorder.getConnectTimer(getName(), netPeerName + ":" + netPeerPort, proxyAddress == null ? NA : proxyAddress, status);
 		}
 
 		@Override
@@ -196,7 +202,8 @@ public final class MicrometerChannelMetricsHandler extends AbstractChannelMetric
 
 		@Override
 		public KeyValues getLowCardinalityKeyValues() {
-			return KeyValues.of(REMOTE_ADDRESS.asString(), netPeerName + ":" + netPeerPort, STATUS.asString(), status);
+			return KeyValues.of(REMOTE_ADDRESS.asString(), netPeerName + ":" + netPeerPort,
+					PROXY_ADDRESS.asString(), proxyAddress == null ? NA : proxyAddress, STATUS.asString(), status);
 		}
 
 		@Override
@@ -228,8 +235,12 @@ public final class MicrometerChannelMetricsHandler extends AbstractChannelMetric
 		static final String TYPE_CLIENT = "client";
 		static final String TYPE_SERVER = "server";
 
+		final String proxyAddress;
 		final MicrometerChannelMetricsRecorder recorder;
+		final SocketAddress remoteAddress;
 		final String type;
+
+		boolean listenerAdded;
 		Observation observation;
 
 		// remote address and status are not known beforehand
@@ -238,38 +249,18 @@ public final class MicrometerChannelMetricsHandler extends AbstractChannelMetric
 		String status = UNKNOWN;
 		ContextView parentContextView;
 
-		TlsMetricsHandler(MicrometerChannelMetricsRecorder recorder, boolean onServer) {
+		TlsMetricsHandler(MicrometerChannelMetricsRecorder recorder, boolean onServer,
+				@Nullable SocketAddress remoteAddress, @Nullable SocketAddress proxyAddress) {
+			this.proxyAddress = formatSocketAddress(proxyAddress);
 			this.recorder = recorder;
+			this.remoteAddress = remoteAddress;
 			this.type = onServer ? TYPE_SERVER : TYPE_CLIENT;
 		}
 
 		@Override
 		@SuppressWarnings("try")
 		public void channelActive(ChannelHandlerContext ctx) {
-			SocketAddress remoteAddress = ctx.channel().remoteAddress();
-			if (remoteAddress instanceof InetSocketAddress) {
-				InetSocketAddress address = (InetSocketAddress) remoteAddress;
-				this.netPeerName = address.getHostString();
-				this.netPeerPort = address.getPort() + "";
-			}
-			else {
-				this.netPeerName = remoteAddress.toString();
-				this.netPeerPort = "";
-			}
-			observation = Observation.createNotStarted(recorder.name() + TLS_HANDSHAKE_TIME, this, OBSERVATION_REGISTRY);
-			parentContextView = updateChannelContext(ctx.channel(), observation);
-			observation.start();
-			ctx.pipeline().get(SslHandler.class)
-					.handshakeFuture()
-					.addListener(f -> {
-						ctx.pipeline().remove(this);
-						status = f.isSuccess() ? SUCCESS : ERROR;
-						observation.stop();
-
-						ReactorNetty.setChannelContext(ctx.channel(), parentContextView);
-						parentContextView = null;
-					});
-
+			addListener(ctx);
 			ctx.fireChannelActive();
 		}
 
@@ -328,7 +319,13 @@ public final class MicrometerChannelMetricsHandler extends AbstractChannelMetric
 
 		@Override
 		public KeyValues getLowCardinalityKeyValues() {
-			return KeyValues.of(REMOTE_ADDRESS.asString(), netPeerName + ':' + netPeerPort, STATUS.asString(), status);
+			if (recorder.onServer) {
+				return KeyValues.of(REMOTE_ADDRESS.asString(), netPeerName + ':' + netPeerPort, STATUS.asString(), status);
+			}
+			else {
+				return KeyValues.of(REMOTE_ADDRESS.asString(), netPeerName + ':' + netPeerPort,
+						PROXY_ADDRESS.asString(), proxyAddress == null ? NA : proxyAddress, STATUS.asString(), status);
+			}
 		}
 
 		@Override
@@ -343,12 +340,46 @@ public final class MicrometerChannelMetricsHandler extends AbstractChannelMetric
 
 		@Override
 		public void userEventTriggered(ChannelHandlerContext ctx, Object evt) {
+			if (evt instanceof SniCompletionEvent) {
+				addListener(ctx);
+			}
 			ctx.fireUserEventTriggered(evt);
 		}
 
 		@Override
 		public Timer getTimer() {
-			return recorder.getTlsHandshakeTimer(getName(), netPeerName + ':' + netPeerPort, status);
+			return recorder.getTlsHandshakeTimer(getName(), netPeerName + ':' + netPeerPort, proxyAddress == null ? NA : proxyAddress, status);
+		}
+
+		private void addListener(ChannelHandlerContext ctx) {
+			if (!listenerAdded) {
+				SslHandler sslHandler = ctx.pipeline().get(SslHandler.class);
+				if (sslHandler != null) {
+					listenerAdded = true;
+					SocketAddress rAddr = remoteAddress != null ? remoteAddress : ctx.channel().remoteAddress();
+					if (rAddr instanceof InetSocketAddress) {
+						InetSocketAddress address = (InetSocketAddress) rAddr;
+						this.netPeerName = address.getHostString();
+						this.netPeerPort = address.getPort() + "";
+					}
+					else {
+						this.netPeerName = rAddr.toString();
+						this.netPeerPort = "";
+					}
+					observation = Observation.createNotStarted(recorder.name() + TLS_HANDSHAKE_TIME, this, OBSERVATION_REGISTRY);
+					parentContextView = updateChannelContext(ctx.channel(), observation);
+					observation.start();
+					sslHandler.handshakeFuture()
+					          .addListener(f -> {
+					               ctx.pipeline().remove(this);
+					               status = f.isSuccess() ? SUCCESS : ERROR;
+					               observation.stop();
+
+					               ReactorNetty.setChannelContext(ctx.channel(), parentContextView);
+					               parentContextView = null;
+					          });
+				}
+			}
 		}
 	}
 }

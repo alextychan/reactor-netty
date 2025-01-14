@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2022 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2024 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,6 +20,7 @@ import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -36,7 +37,8 @@ import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.ChannelOption;
 import io.netty.channel.EventLoopGroup;
-import io.netty.channel.unix.DomainSocketAddress;
+import io.netty.channel.ServerChannel;
+import io.netty.channel.socket.DatagramChannel;
 import io.netty.handler.codec.DecoderException;
 import io.netty.util.AttributeKey;
 import org.reactivestreams.Subscription;
@@ -48,8 +50,10 @@ import reactor.netty.ChannelBindException;
 import reactor.netty.Connection;
 import reactor.netty.ConnectionObserver;
 import reactor.netty.DisposableServer;
+import reactor.netty.FutureMono;
 import reactor.netty.channel.AbortedException;
 import reactor.netty.channel.ChannelOperations;
+import reactor.netty.internal.util.MapUtils;
 import reactor.netty.resources.ConnectionProvider;
 import reactor.netty.resources.LoopResources;
 import reactor.util.Logger;
@@ -58,9 +62,10 @@ import reactor.util.annotation.Nullable;
 import reactor.util.context.Context;
 
 import static reactor.netty.ReactorNetty.format;
+import static reactor.netty.transport.DomainSocketAddressUtils.isDomainSocketAddress;
 
 /**
- * A generic server {@link Transport} that will {@link #bind()} to a local address and provide a {@link DisposableServer}
+ * A generic server {@link Transport} that will {@link #bind()} to a local address and provide a {@link DisposableServer}.
  *
  * @param <T> ServerTransport implementation
  * @param <CONF> Server Configuration implementation
@@ -96,7 +101,7 @@ public abstract class ServerTransport<T extends ServerTransport<T, CONF>,
 
 			boolean isDomainSocket = false;
 			DisposableBind disposableServer;
-			if (local instanceof DomainSocketAddress) {
+			if (isDomainSocketAddress(local)) {
 				isDomainSocket = true;
 				disposableServer = new UdsDisposableBind(sink, config, local);
 			}
@@ -106,9 +111,13 @@ public abstract class ServerTransport<T extends ServerTransport<T, CONF>,
 
 			ConnectionObserver childObs =
 					new ChildObserver(config.defaultChildObserver().then(config.childObserver()));
-			Acceptor acceptor = new Acceptor(config.childEventLoopGroup(), config.channelInitializer(childObs, null, true),
-					config.childOptions, config.childAttrs, isDomainSocket);
-			TransportConnector.bind(config, new AcceptorInitializer(acceptor), local, isDomainSocket)
+			ChannelInitializer<Channel> channelInitializer = config.channelInitializer(childObs, null, true);
+			if (!config.channelType(isDomainSocket).equals(DatagramChannel.class)) {
+				Acceptor acceptor = new Acceptor(config.childEventLoopGroup(), channelInitializer,
+						config.childOptions, config.childAttrs, isDomainSocket);
+				channelInitializer = new AcceptorInitializer(acceptor);
+			}
+			TransportConnector.bind(config, channelInitializer, local, isDomainSocket)
 			                  .subscribe(disposableServer);
 		});
 
@@ -201,7 +210,7 @@ public abstract class ServerTransport<T extends ServerTransport<T, CONF>,
 	}
 
 	/**
-	 * Set or add the given {@link ConnectionObserver} for each remote connection
+	 * Set or add the given {@link ConnectionObserver} for each remote connection.
 	 *
 	 * @param observer the {@link ConnectionObserver} addition
 	 * @return a new {@link ServerTransport} reference
@@ -528,25 +537,51 @@ public abstract class ServerTransport<T extends ServerTransport<T, CONF>,
 		@SuppressWarnings("FutureReturnValueIgnored")
 		public void disposeNow(Duration timeout) {
 			if (isDisposed()) {
+				if (log.isDebugEnabled()) {
+					log.debug(format(channel(), "Server has been disposed"));
+				}
 				return;
+			}
+			if (log.isDebugEnabled()) {
+				log.debug(format(channel(), "Server is about to be disposed with timeout: {}"), timeout);
 			}
 			dispose();
 			Mono<Void> terminateSignals = Mono.empty();
-			if (config.channelGroup != null) {
-				List<Mono<Void>> channels = new ArrayList<>();
+			if (config.channelGroup != null && config.channelGroup.size() > 0) {
+				HashMap<Channel, List<Mono<Void>>> channelsToMono =
+						new HashMap<>(MapUtils.calculateInitialCapacity(config.channelGroup.size()));
 				// Wait for the running requests to finish
-				config.channelGroup.forEach(channel -> {
+				for (Channel channel : config.channelGroup) {
+					Channel parent = channel.parent();
+					// For TCP and HTTP/1.1 the channel parent is the ServerChannel
+					boolean isParentServerChannel = parent instanceof ServerChannel;
+					List<Mono<Void>> monos =
+							MapUtils.computeIfAbsent(channelsToMono,
+									isParentServerChannel ? channel : parent,
+									key -> new ArrayList<>());
+					if (monos.isEmpty() && !isParentServerChannel) {
+						// In case of HTTP/2 Reactor Netty will send GO_AWAY with lastStreamId to notify the
+						// client to stop opening streams, the actual CLOSE will happen when all
+						// streams up to lastStreamId are closed
+						monos.add(FutureMono.from(parent.close()));
+					}
 					ChannelOperations<?, ?> ops = ChannelOperations.get(channel);
 					if (ops != null) {
-						channels.add(ops.onTerminate().doFinally(sig -> ops.dispose()));
+						monos.add(ops.onTerminate().doFinally(sig -> ops.dispose()));
 					}
-					else {
-						//"FutureReturnValueIgnored" this is deliberate
+				}
+				for (Map.Entry<Channel, List<Mono<Void>>> entry : channelsToMono.entrySet()) {
+					Channel channel = entry.getKey();
+					List<Mono<Void>> monos = entry.getValue();
+					if (monos.isEmpty()) {
+						// At this point there are no running requests for this channel
+						// This can happen for TCP and HTTP/1.1
+						// "FutureReturnValueIgnored" this is deliberate
 						channel.close();
 					}
-				});
-				if (!channels.isEmpty()) {
-					terminateSignals = Mono.when(channels);
+					else {
+						terminateSignals = Mono.when(monos).and(terminateSignals);
+					}
 				}
 			}
 
@@ -623,13 +658,8 @@ public abstract class ServerTransport<T extends ServerTransport<T, CONF>,
 		}
 
 		@Override
-		public DomainSocketAddress address() {
-			return (DomainSocketAddress) channel().localAddress();
-		}
-
-		@Override
 		public String path() {
-			return address().path();
+			return DomainSocketAddressUtils.path(channel().localAddress());
 		}
 	}
 }

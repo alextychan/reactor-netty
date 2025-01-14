@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2023 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2024 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,6 +20,8 @@ apply plugin: 'me.champeau.gradle.japicmp'
 apply plugin: 'de.undercouch.download'
 apply plugin: 'biz.aQute.bnd.builder'
 
+apply from: "${rootDir}/gradle/toolchains.gradle"
+
 ext {
 	bndOptions = [
 			"Export-Package" : "reactor.netty.http*;version=$osgiVersion;-noimport:=true",
@@ -28,6 +30,7 @@ ext {
 					"io.netty.channel.kqueue;resolution:=optional;version=\"[4.1,5)\"",
 					"io.netty.handler.codec.haproxy;resolution:=optional;version=\"[4.1,5)\"",
 					"io.netty.incubator.channel.uring;resolution:=optional",
+					"io.netty.incubator.codec.http3;resolution:=optional",
 					"io.micrometer.*;resolution:=optional",
 					"*"
 			].join(","),
@@ -46,6 +49,10 @@ sourceSets {
 		compileClasspath += sourceSets.main.output
 		runtimeClasspath += sourceSets.main.output
 	}
+	http3Test {
+		compileClasspath += sourceSets.main.output
+		runtimeClasspath += sourceSets.main.output
+	}
 }
 
 configurations {
@@ -56,6 +63,8 @@ configurations {
 	noMicrometerTestRuntimeOnly.extendsFrom(runtimeOnly)
 	contextPropagationTestImplementation.extendsFrom(implementation)
 	contextPropagationTestRuntimeOnly.extendsFrom(runtimeOnly)
+	http3TestImplementation.extendsFrom(implementation)
+	http3TestRuntimeOnly.extendsFrom(runtimeOnly)
 }
 
 dependencies {
@@ -81,6 +90,7 @@ dependencies {
 		api "io.netty:netty-resolver-dns-native-macos:$nettyVersion"
 	}
 	compileOnly "io.netty:netty-codec-haproxy:$nettyVersion"
+	compileOnly "io.netty.incubator:netty-incubator-codec-http3:$nettyHttp3Version"
 	//transport resolution: typical build forces epoll but not kqueue transitively
 	//on the other hand, if we want to make transport-specific tests, we'll make all
 	// native optional at compile time and add correct native/nio to testRuntime
@@ -140,7 +150,6 @@ dependencies {
 	testImplementation "org.junit.jupiter:junit-jupiter-params:$junitVersion"
 	testImplementation "io.projectreactor.tools:blockhound-junit-platform:$blockHoundVersion"
 	testImplementation "io.micrometer:micrometer-core:$micrometerVersion"
-	testImplementation "io.micrometer:micrometer-test:$micrometerVersion"
 	testImplementation("io.micrometer:micrometer-tracing-integration-test:$micrometerTracingVersion") {
 		exclude module: "context-propagation"
 	}
@@ -151,11 +160,30 @@ dependencies {
 	testRuntimeOnly "org.slf4j:jcl-over-slf4j:$slf4jVersion"
 	testRuntimeOnly "ch.qos.logback:logback-classic:$logbackVersion"
 
+	// Needed for zstd compression
+	testImplementation "com.github.luben:zstd-jni:$zstdJniVersion"
+
+	// Needed for Brotli compression
+	testImplementation "com.aayushatharva.brotli4j:brotli4j:$brotli4jVersion"
+	if (osdetector.classifier == "linux-aarch_64" || osdetector.classifier == "osx-aarch_64") {
+		testRuntimeOnly "com.aayushatharva.brotli4j:native-${osdetector.os}-aarch64:$brotli4jVersion"
+	}
+	else {
+		testRuntimeOnly "com.aayushatharva.brotli4j:native-${osdetector.classifier}:$brotli4jVersion"
+	}
+
 	// Needed for proxy testing
 	testRuntimeOnly "io.netty:netty-handler-proxy:$nettyVersion"
 	testRuntimeOnly "io.netty:netty-codec-haproxy:$nettyVersion"
 	// Needed for HTTP/2 testing
 	testRuntimeOnly "io.netty:netty-tcnative-boringssl-static:$boringSslVersion$os_suffix"
+
+	if (project.hasProperty("testToolchain")) {
+		if (testToolchain == "17") {
+			// Necessary for generating SelfSignedCertificate on Java version >= 15
+			testRuntimeOnly "org.bouncycastle:bcpkix-jdk15on:$bouncycastleVersion"
+		}
+	}
 
 	// noMicrometerTest sourceSet (must not include Micrometer)
 	noMicrometerTestImplementation "org.assertj:assertj-core:$assertJVersion"
@@ -170,6 +198,17 @@ dependencies {
 	contextPropagationTestImplementation "ch.qos.logback:logback-classic:$logbackVersion"
 	contextPropagationTestImplementation "io.micrometer:context-propagation:$contextPropagationVersion"
 	contextPropagationTestRuntimeOnly "org.junit.jupiter:junit-jupiter-engine:$junitVersion"
+
+	http3TestImplementation(testFixtures(project(':reactor-netty-core'))) {
+		exclude module: "reactor-netty-core"
+	}
+	http3TestCompileOnly "com.google.code.findbugs:jsr305:$jsr305Version"
+	http3TestImplementation "io.projectreactor:reactor-test:$testAddonVersion"
+	http3TestImplementation "org.assertj:assertj-core:$assertJVersion"
+	http3TestImplementation "org.junit.jupiter:junit-jupiter-api:$junitVersion"
+	http3TestImplementation "io.netty.incubator:netty-incubator-codec-http3:$nettyHttp3Version"
+	http3TestRuntimeOnly "org.junit.jupiter:junit-jupiter-engine:$junitVersion"
+	http3TestRuntimeOnly "ch.qos.logback:logback-classic:$logbackVersion"
 }
 
 jar {
@@ -241,8 +280,6 @@ task japicmp(type: JapicmpTask) {
 
 	compatibilityChangeExcludes = [ "METHOD_NEW_DEFAULT" ]
 	methodExcludes = [
-			'reactor.netty.http.server.HttpServerRequest#protocol()',
-			'reactor.netty.http.server.HttpServerRequest#timestamp()'
 	]
 }
 
@@ -262,5 +299,12 @@ task contextPropagationTest(type: Test) {
 }
 
 tasks.check.dependsOn(contextPropagationTest)
+
+task http3Test(type: Test) {
+	testClassesDirs = sourceSets.http3Test.output.classesDirs
+	classpath = sourceSets.http3Test.runtimeClasspath
+}
+
+tasks.check.dependsOn(http3Test)
 
 description = "HTTP functionality for the Reactor Netty library"

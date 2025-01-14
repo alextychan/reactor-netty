@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019-2022 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2019-2024 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,17 +17,23 @@ package reactor.netty.http.client;
 
 import reactor.util.annotation.Nullable;
 
+import java.net.SocketAddress;
 import java.util.function.Function;
 
 /**
+ * {@link AbstractHttpClientMetricsHandler} for collecting metrics on {@link HttpClient} level.
+ *
  * @author Violeta Georgieva
  */
 final class HttpClientMetricsHandler extends AbstractHttpClientMetricsHandler {
 
 	final HttpClientMetricsRecorder recorder;
 
-	HttpClientMetricsHandler(HttpClientMetricsRecorder recorder, @Nullable Function<String, String> uriTagValue) {
-		super(uriTagValue);
+	HttpClientMetricsHandler(HttpClientMetricsRecorder recorder,
+			SocketAddress remoteAddress,
+			@Nullable SocketAddress proxyAddress,
+			@Nullable Function<String, String> uriTagValue) {
+		super(remoteAddress, proxyAddress, uriTagValue);
 		this.recorder = recorder;
 	}
 

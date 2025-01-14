@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2021 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2011-2023 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -36,6 +36,8 @@ import reactor.core.publisher.Mono;
 import reactor.util.annotation.Nullable;
 
 /**
+ * Server routes are unique and only the first matching in order of declaration will be invoked.
+ *
  * @author Stephane Maldini
  */
 final class DefaultHttpServerRoutes implements HttpServerRoutes {
@@ -51,6 +53,7 @@ final class DefaultHttpServerRoutes implements HttpServerRoutes {
 	public HttpServerRoutes directory(String uri, Path directory,
 			@Nullable Function<HttpServerResponse, HttpServerResponse> interceptor) {
 		Objects.requireNonNull(directory, "directory");
+		Path absPath = directory.toAbsolutePath().normalize();
 		return route(HttpPredicate.prefix(uri), (req, resp) -> {
 
 			String prefix = URI.create(req.uri())
@@ -61,8 +64,8 @@ final class DefaultHttpServerRoutes implements HttpServerRoutes {
 				prefix = prefix.substring(1);
 			}
 
-			Path p = directory.resolve(prefix);
-			if (Files.isReadable(p)) {
+			Path p = absPath.resolve(prefix).toAbsolutePath().normalize();
+			if (Files.isReadable(p) && p.startsWith(absPath)) {
 
 				if (interceptor != null) {
 					return interceptor.apply(resp)

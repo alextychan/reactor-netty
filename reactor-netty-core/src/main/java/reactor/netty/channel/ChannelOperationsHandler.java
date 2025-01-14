@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2022 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2011-2024 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -35,7 +35,7 @@ import static reactor.netty.ReactorNetty.format;
 
 /**
  * Netty {@link io.netty.channel.ChannelDuplexHandler} implementation that bridge data
- * via an IPC {@link NettyOutbound}
+ * via an IPC {@link NettyOutbound}.
  *
  * @author Stephane Maldini
  */
@@ -65,7 +65,7 @@ final class ChannelOperationsHandler extends ChannelInboundHandlerAdapter {
 	}
 
 	@Override
-	final public void channelInactive(ChannelHandlerContext ctx) {
+	public final void channelInactive(ChannelHandlerContext ctx) {
 		try {
 			Connection connection = Connection.from(ctx.channel());
 			ChannelOperations<?, ?> ops = connection.as(ChannelOperations.class);
@@ -99,30 +99,39 @@ final class ChannelOperationsHandler extends ChannelInboundHandlerAdapter {
 				ctx.close();
 			}
 		}
+		ReferenceCountUtil.release(evt);
 	}
 
 	@Override
 	@SuppressWarnings("FutureReturnValueIgnored")
-	final public void channelRead(ChannelHandlerContext ctx, Object msg) {
+	public final void channelRead(ChannelHandlerContext ctx, Object msg) {
 		if (msg == null || msg == Unpooled.EMPTY_BUFFER || msg instanceof EmptyByteBuf) {
 			return;
 		}
 		try {
-			ChannelOperations<?, ?> ops = ChannelOperations.get(ctx.channel());
+			Connection connection = Connection.from(ctx.channel());
+			ChannelOperations<?, ?> ops = connection.as(ChannelOperations.class);
 			if (ops != null) {
 				ops.onInboundNext(ctx, msg);
 			}
 			else {
-				if (log.isDebugEnabled()) {
-					if (msg instanceof DecoderResultProvider) {
-						DecoderResult decoderResult = ((DecoderResultProvider) msg).decoderResult();
-						if (decoderResult.isFailure()) {
+				if (msg instanceof DecoderResultProvider) {
+					DecoderResult decoderResult = ((DecoderResultProvider) msg).decoderResult();
+					if (decoderResult.isFailure()) {
+						if (log.isDebugEnabled()) {
 							log.debug(format(ctx.channel(), "Decoding failed."), decoderResult.cause());
 						}
-					}
 
+						//"FutureReturnValueIgnored" this is deliberate
+						ctx.close();
+						listener.onUncaughtException(connection, decoderResult.cause());
+					}
+				}
+
+				if (log.isDebugEnabled()) {
 					log.debug(format(ctx.channel(), "No ChannelOperation attached."));
 				}
+
 				ReferenceCountUtil.release(msg);
 			}
 		}
@@ -137,7 +146,7 @@ final class ChannelOperationsHandler extends ChannelInboundHandlerAdapter {
 	}
 
 	@Override
-	final public void exceptionCaught(ChannelHandlerContext ctx, Throwable err) {
+	public final void exceptionCaught(ChannelHandlerContext ctx, Throwable err) {
 		Connection connection = Connection.from(ctx.channel());
 		ChannelOperations<?, ?> ops = connection.as(ChannelOperations.class);
 		if (ops != null) {
@@ -145,6 +154,14 @@ final class ChannelOperationsHandler extends ChannelInboundHandlerAdapter {
 		}
 		else {
 			listener.onUncaughtException(connection, err);
+		}
+	}
+
+	@Override
+	public final void channelWritabilityChanged(ChannelHandlerContext ctx) {
+		ChannelOperations<?, ?> ops = ChannelOperations.get(ctx.channel());
+		if (ops != null) {
+			ops.onWritabilityChanged();
 		}
 	}
 

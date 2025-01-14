@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018-2021 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2018-2024 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,8 +19,7 @@ import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.util.function.BiFunction;
 
-import io.netty.channel.Channel;
-import io.netty.channel.socket.SocketChannel;
+import io.netty.handler.codec.http.HttpHeaderNames;
 import io.netty.handler.codec.http.HttpRequest;
 import reactor.util.annotation.Nullable;
 
@@ -41,21 +40,49 @@ import static java.util.Objects.requireNonNull;
  * @see <a href="https://tools.ietf.org/html/rfc7239">rfc7239</a>
  */
 public final class ConnectionInfo {
+	static final int DEFAULT_HTTP_PORT = 80;
+	static final int DEFAULT_HTTPS_PORT = 443;
+	static final String DEFAULT_HOST_NAME = "localhost";
 
-	final InetSocketAddress hostAddress;
+	final SocketAddress hostAddress;
 
-	final InetSocketAddress remoteAddress;
+	final SocketAddress remoteAddress;
 
 	final String scheme;
 
+	final String hostName;
+
+	final int hostPort;
+
+	final boolean isInetAddress;
+
 	@Nullable
-	static ConnectionInfo from(Channel channel, HttpRequest request, boolean secured, SocketAddress remoteAddress,
+	final String forwardedPrefix;
+
+	static ConnectionInfo from(HttpRequest request, boolean secured, SocketAddress localAddress, SocketAddress remoteAddress,
 			@Nullable BiFunction<ConnectionInfo, HttpRequest, ConnectionInfo> forwardedHeaderHandler) {
+		String hostName = DEFAULT_HOST_NAME;
+		int hostPort = -1;
+		String scheme = secured ? "https" : "http";
+
+		String header = request.headers().get(HttpHeaderNames.HOST);
+		if (header != null) {
+			hostName = header;
+			if (!header.isEmpty()) {
+				int portIndex = header.charAt(0) == '[' ? header.indexOf(':', header.indexOf(']')) : header.indexOf(':');
+				if (portIndex != -1) {
+					hostName = header.substring(0, portIndex);
+					hostPort = Integer.parseInt(header.substring(portIndex + 1));
+				}
+			}
+		}
+
 		if (!(remoteAddress instanceof InetSocketAddress)) {
-			return null;
+			return new ConnectionInfo(localAddress, hostName, hostPort, remoteAddress, scheme, false);
 		}
 		else {
-			ConnectionInfo connectionInfo = ConnectionInfo.newConnectionInfo(channel, secured, (InetSocketAddress) remoteAddress);
+			ConnectionInfo connectionInfo =
+					new ConnectionInfo(localAddress, hostName, hostPort, remoteAddress, scheme, true);
 			if (forwardedHeaderHandler != null) {
 				return forwardedHeaderHandler.apply(connectionInfo, request);
 			}
@@ -63,39 +90,42 @@ public final class ConnectionInfo {
 		}
 	}
 
-	/**
-	 * Retrieve the connection information from the current connection directly
-	 * @param c the current channel
-	 * @param secured is transport secure (SSL)
-	 * @return the connection information
-	 */
-	static ConnectionInfo newConnectionInfo(Channel c, boolean secured, InetSocketAddress remoteAddress) {
-		SocketChannel channel = (SocketChannel) c;
-		InetSocketAddress hostAddress = channel.localAddress();
-		String scheme = secured ? "https" : "http";
-		return new ConnectionInfo(hostAddress, remoteAddress, scheme);
+	ConnectionInfo(SocketAddress hostAddress, SocketAddress remoteAddress, boolean secured) {
+		this(hostAddress, DEFAULT_HOST_NAME, -1, remoteAddress, secured ? "https" : "http", remoteAddress instanceof InetSocketAddress);
 	}
 
-	ConnectionInfo(InetSocketAddress hostAddress, InetSocketAddress remoteAddress, String scheme) {
+	ConnectionInfo(SocketAddress hostAddress, String hostName, int hostPort,
+			SocketAddress remoteAddress, String scheme, boolean isInetAddress) {
+		this(hostAddress, hostName, hostPort, remoteAddress, scheme, isInetAddress, null);
+	}
+
+	ConnectionInfo(SocketAddress hostAddress, String hostName, int hostPort,
+			SocketAddress remoteAddress, String scheme, boolean isInetAddress, @Nullable String forwardedPrefix) {
 		this.hostAddress = hostAddress;
+		this.hostName = hostName;
+		this.hostPort = hostPort;
+		this.isInetAddress = isInetAddress;
 		this.remoteAddress = remoteAddress;
 		this.scheme = scheme;
+		this.forwardedPrefix = forwardedPrefix;
 	}
 
 	/**
 	 * Return the host address of the connection.
 	 * @return the host address
 	 */
+	@Nullable
 	public InetSocketAddress getHostAddress() {
-		return hostAddress;
+		return isInetAddress ? (InetSocketAddress) hostAddress : null;
 	}
 
 	/**
 	 * Return the remote address of the connection.
 	 * @return the remote address
 	 */
+	@Nullable
 	public InetSocketAddress getRemoteAddress() {
-		return remoteAddress;
+		return isInetAddress ? (InetSocketAddress) remoteAddress : null;
 	}
 
 	/**
@@ -113,7 +143,22 @@ public final class ConnectionInfo {
 	 */
 	public ConnectionInfo withHostAddress(InetSocketAddress hostAddress) {
 		requireNonNull(hostAddress, "hostAddress");
-		return new ConnectionInfo(hostAddress, this.remoteAddress, this.scheme);
+		return new ConnectionInfo(hostAddress, hostAddress.getHostString(), hostAddress.getPort(), this.remoteAddress,
+				this.scheme, true);
+	}
+
+	/**
+	 * Return a new {@link ConnectionInfo} with updated host address, host name, and host port information.
+	 * @param hostAddress the updated host address
+	 * @param hostName the updated host name
+	 * @param hostPort the updated host port
+	 * @return a new {@link ConnectionInfo}
+	 * @since 1.0.32
+	 */
+	public ConnectionInfo withHostAddress(InetSocketAddress hostAddress, String hostName, int hostPort) {
+		requireNonNull(hostAddress, "hostAddress");
+		requireNonNull(hostName, "hostName");
+		return new ConnectionInfo(hostAddress, hostName, hostPort, this.remoteAddress, this.scheme, true);
 	}
 
 	/**
@@ -123,7 +168,7 @@ public final class ConnectionInfo {
 	 */
 	public ConnectionInfo withRemoteAddress(InetSocketAddress remoteAddress) {
 		requireNonNull(remoteAddress, "remoteAddress");
-		return new ConnectionInfo(this.hostAddress, remoteAddress, this.scheme);
+		return new ConnectionInfo(this.hostAddress, this.hostName, this.hostPort, remoteAddress, this.scheme, true);
 	}
 
 	/**
@@ -133,7 +178,57 @@ public final class ConnectionInfo {
 	 */
 	public ConnectionInfo withScheme(String scheme) {
 		requireNonNull(scheme, "scheme");
-		return new ConnectionInfo(this.hostAddress, this.remoteAddress, scheme);
+		return new ConnectionInfo(this.hostAddress, this.hostName, this.hostPort, this.remoteAddress, scheme, this.isInetAddress);
 	}
 
+	/**
+	 * Return a new {@link ConnectionInfo} with the forwardedPrefix set.
+	 * @param forwardedPrefix the prefix provided via X-Forwarded-Prefix header
+	 * @return a new {@link ConnectionInfo}
+	 * @since 1.1.23
+	 */
+	public ConnectionInfo withForwardedPrefix(String forwardedPrefix) {
+		requireNonNull(forwardedPrefix, "forwardedPrefix");
+		return new ConnectionInfo(this.hostAddress, this.hostName, this.hostPort, this.remoteAddress, this.scheme,
+				this.isInetAddress, forwardedPrefix);
+	}
+
+	/**
+	 * Returns the connection host name.
+	 * @return the connection host name
+	 * @since 1.0.32
+	 */
+	public String getHostName() {
+		return hostName;
+	}
+
+	/**
+	 * Returns the connection host port.
+	 * @return the connection host port
+	 * @since 1.0.32
+	 */
+	public int getHostPort() {
+		return hostPort != -1 ? hostPort : getDefaultHostPort(scheme);
+	}
+
+	/**
+	 * Returns the X-Forwarded-Prefix if it was part of the request headers.
+	 * @return the X-Forwarded-Prefix
+	 * @since 1.1.23
+	 */
+	@Nullable
+	public String getForwardedPrefix() {
+		return forwardedPrefix;
+	}
+
+	/**
+	 * Returns the default host port number based on scheme.
+	 * @param scheme a connection scheme like "http", "https", or "wss"
+	 * @return the default host port number based on scheme
+	 * @since 1.0.32
+	 */
+	public static int getDefaultHostPort(String scheme) {
+		return scheme.equalsIgnoreCase("https") || scheme.equalsIgnoreCase("wss") ?
+				DEFAULT_HTTPS_PORT : DEFAULT_HTTP_PORT;
+	}
 }

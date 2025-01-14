@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2022 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2024 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,7 +23,6 @@ import io.netty.channel.ChannelOption;
 import io.netty.channel.ChannelPromise;
 import io.netty.channel.DefaultChannelPromise;
 import io.netty.channel.EventLoop;
-import io.netty.channel.unix.DomainSocketAddress;
 import io.netty.resolver.AddressResolver;
 import io.netty.resolver.AddressResolverGroup;
 import io.netty.util.AttributeKey;
@@ -54,6 +53,7 @@ import java.util.function.Supplier;
 
 import static reactor.netty.ReactorNetty.format;
 import static reactor.netty.ReactorNetty.setChannelContext;
+import static reactor.netty.transport.DomainSocketAddressUtils.isDomainSocketAddress;
 
 /**
  * {@link TransportConnector} is a helper class that creates, initializes and registers the channel.
@@ -160,7 +160,7 @@ public final class TransportConnector {
 		Objects.requireNonNull(eventLoop, "eventLoop");
 		Objects.requireNonNull(contextView, "contextView");
 
-		boolean isDomainAddress = remoteAddress instanceof DomainSocketAddress;
+		boolean isDomainAddress = isDomainSocketAddress(remoteAddress);
 		return doInitAndRegister(config, channelInitializer, isDomainAddress, eventLoop)
 				.flatMap(channel -> doResolveAndConnect(channel, config, remoteAddress, resolverGroup, contextView)
 						.onErrorResume(RetryConnectException.class,
@@ -180,7 +180,7 @@ public final class TransportConnector {
 	}
 
 	/**
-	 * Set the channel attributes
+	 * Set the channel attributes.
 	 *
 	 * @param channel the channel
 	 * @param attrs the attributes
@@ -193,7 +193,7 @@ public final class TransportConnector {
 	}
 
 	/**
-	 * Set the channel options
+	 * Set the channel options.
 	 *
 	 * @param channel the channel
 	 * @param options the options
@@ -221,11 +221,10 @@ public final class TransportConnector {
 		}
 	}
 
-	@SuppressWarnings("FutureReturnValueIgnored")
 	static void doConnect(
 			List<SocketAddress> addresses,
 			@Nullable Supplier<? extends SocketAddress> bindAddress,
-			ChannelPromise connectPromise,
+			MonoChannelPromise connectPromise,
 			int index) {
 		Channel channel = connectPromise.channel();
 		channel.eventLoop().execute(() -> {
@@ -249,9 +248,6 @@ public final class TransportConnector {
 					connectPromise.setSuccess();
 				}
 				else {
-					// "FutureReturnValueIgnored" this is deliberate
-					channel.close();
-
 					Throwable cause = future.cause();
 					if (log.isDebugEnabled()) {
 						log.debug(format(channel, "Connect attempt to [" + remoteAddress + "] failed."), cause);
@@ -269,7 +265,6 @@ public final class TransportConnector {
 		});
 	}
 
-	@SuppressWarnings("FutureReturnValueIgnored")
 	static Mono<Channel> doInitAndRegister(
 			TransportConfig config,
 			ChannelInitializer<Channel> channelInitializer,
@@ -295,19 +290,7 @@ public final class TransportConnector {
 		}
 
 		MonoChannelPromise monoChannelPromise = new MonoChannelPromise(channel);
-
 		channel.unsafe().register(eventLoop, monoChannelPromise);
-		Throwable cause = monoChannelPromise.cause();
-		if (cause != null) {
-			if (channel.isRegistered()) {
-				// "FutureReturnValueIgnored" this is deliberate
-				channel.close();
-			}
-			else {
-				channel.unsafe().closeForcibly();
-			}
-		}
-
 		return monoChannelPromise;
 	}
 
@@ -389,8 +372,6 @@ public final class TransportConnector {
 			MonoChannelPromise monoChannelPromise = new MonoChannelPromise(channel);
 			resolveFuture.addListener((FutureListener<List<SocketAddress>>) future -> {
 				if (future.cause() != null) {
-					// "FutureReturnValueIgnored" this is deliberate
-					channel.close();
 					monoChannelPromise.tryFailure(future.cause());
 				}
 				else {
@@ -581,8 +562,16 @@ public final class TransportConnector {
 		}
 
 		@Override
+		@SuppressWarnings("FutureReturnValueIgnored")
 		public boolean tryFailure(Throwable cause) {
 			if (RESULT_UPDATER.compareAndSet(this, null, cause)) {
+				if (channel.isRegistered()) {
+					// "FutureReturnValueIgnored" this is deliberate
+					channel.close();
+				}
+				else {
+					channel.unsafe().closeForcibly();
+				}
 				if (actual != null) {
 					actual.onError(cause);
 				}

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018-2022 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2018-2024 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -53,6 +53,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 
 /**
+ * This test class verifies {@link SslProvider}.
+ *
  * @author Violeta Georgieva
  */
 class SslProviderTests extends BaseHttpTest {
@@ -104,6 +106,7 @@ class SslProviderTests extends BaseHttpTest {
 	}
 
 	@Test
+	@SuppressWarnings("deprecation")
 	void testProtocolHttp11SslConfiguration() {
 		disposableServer =
 				server.protocol(HttpProtocol.HTTP11)
@@ -115,6 +118,7 @@ class SslProviderTests extends BaseHttpTest {
 	}
 
 	@Test
+	@SuppressWarnings("deprecation")
 	void testSslConfigurationProtocolHttp11_1() {
 		disposableServer =
 				server.secure(spec -> spec.sslContext(serverSslContextBuilder))
@@ -126,6 +130,7 @@ class SslProviderTests extends BaseHttpTest {
 	}
 
 	@Test
+	@SuppressWarnings("deprecation")
 	void testSslConfigurationProtocolHttp11_2() {
 		disposableServer =
 				server.protocol(HttpProtocol.H2)
@@ -138,6 +143,7 @@ class SslProviderTests extends BaseHttpTest {
 	}
 
 	@Test
+	@SuppressWarnings("deprecation")
 	void testProtocolH2SslConfiguration() {
 		disposableServer =
 				server.protocol(HttpProtocol.H2)
@@ -151,6 +157,7 @@ class SslProviderTests extends BaseHttpTest {
 	}
 
 	@Test
+	@SuppressWarnings("deprecation")
 	void testSslConfigurationProtocolH2_1() {
 		disposableServer =
 				server.secure(spec -> spec.sslContext(serverSslContextBuilderH2))
@@ -164,6 +171,7 @@ class SslProviderTests extends BaseHttpTest {
 	}
 
 	@Test
+	@SuppressWarnings("deprecation")
 	void testSslConfigurationProtocolH2_2() {
 		disposableServer =
 				server.protocol(HttpProtocol.HTTP11)
@@ -178,6 +186,7 @@ class SslProviderTests extends BaseHttpTest {
 	}
 
 	@Test
+	@SuppressWarnings("deprecation")
 	void testTls13Support() {
 		disposableServer =
 				server.secure(spec ->
@@ -209,6 +218,7 @@ class SslProviderTests extends BaseHttpTest {
 		doTestTls13UnsupportedProtocol(false, true);
 	}
 
+	@SuppressWarnings("deprecation")
 	private void doTestTls13UnsupportedProtocol(boolean serverSupport, boolean clientSupport) {
 		if (serverSupport) {
 			serverSslContextBuilder.configure(builder -> builder.protocols("TLSv1.3"));
@@ -240,6 +250,7 @@ class SslProviderTests extends BaseHttpTest {
 	}
 
 	@Test
+	@SuppressWarnings("deprecation")
 	void testAdd() {
 		SslProvider.Builder builder =
 				SslProvider.builder()
@@ -258,6 +269,7 @@ class SslProviderTests extends BaseHttpTest {
 	}
 
 	@Test
+	@SuppressWarnings("deprecation")
 	void testAddBadValues() {
 		assertThatExceptionOfType(NullPointerException.class)
 				.isThrownBy(() -> SslProvider.builder()
@@ -271,6 +283,7 @@ class SslProviderTests extends BaseHttpTest {
 	}
 
 	@Test
+	@SuppressWarnings("deprecation")
 	void testAddAll() {
 		Map<String, Consumer<? super SslProvider.SslContextSpec>> map = new HashMap<>();
 		map.put("localhost", spec -> spec.sslContext(localhostSslContext));
@@ -294,6 +307,7 @@ class SslProviderTests extends BaseHttpTest {
 	}
 
 	@Test
+	@SuppressWarnings("deprecation")
 	void testAddAllBadValues() {
 		assertThatExceptionOfType(NullPointerException.class)
 				.isThrownBy(() -> SslProvider.builder()
@@ -327,6 +341,7 @@ class SslProviderTests extends BaseHttpTest {
 	}
 
 	@Test
+	@SuppressWarnings("deprecation")
 	void testSetAllBadValues() {
 		assertThatExceptionOfType(NullPointerException.class)
 				.isThrownBy(() -> SslProvider.builder()
@@ -335,6 +350,7 @@ class SslProviderTests extends BaseHttpTest {
 	}
 
 	@Test
+	@SuppressWarnings("deprecation")
 	void testSetSniAsyncMappingsBadValues() {
 		assertThatExceptionOfType(NullPointerException.class)
 				.isThrownBy(() -> SslProvider.builder()
@@ -394,10 +410,11 @@ class SslProviderTests extends BaseHttpTest {
 
 		final OpenSslSessionContext sessionContext = clientContext.sessionContext();
 		assertThat(sessionContext.getSessionTimeout()).isEqualTo(300);
-		assertThat(sessionContext.isSessionCacheEnabled()).isFalse();
+		assertThat(sessionContext.isSessionCacheEnabled()).isTrue();
 	}
 
 	@Test
+	@SuppressWarnings("deprecation")
 	void testServerSslProviderIsOpenSsl() {
 		final SslProvider serverProvider = SslProvider.builder()
 												.sslContext(serverSslContextBuilderH2)

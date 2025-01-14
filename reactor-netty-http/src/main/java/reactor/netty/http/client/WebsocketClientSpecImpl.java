@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2021 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2023 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,20 +19,36 @@ import io.netty.handler.codec.http.websocketx.WebSocketVersion;
 import reactor.netty.http.websocket.WebsocketSpecImpl;
 
 /**
+ * Websocket client configuration.
+ *
  * @author Violeta Georgieva
  * @since 0.9.7
  */
 final class WebsocketClientSpecImpl extends WebsocketSpecImpl implements WebsocketClientSpec {
 
-	private final WebSocketVersion version;
+	@Override
+	public boolean compressionAllowClientNoContext() {
+		return allowClientNoContext;
+	}
+
+	@Override
+	public boolean compressionRequestedServerNoContext() {
+		return requestedServerNoContext;
+	}
 
 	@Override
 	public WebSocketVersion version() {
 		return version;
 	}
 
+	private final boolean allowClientNoContext;
+	private final boolean requestedServerNoContext;
+	private final WebSocketVersion version;
+
 	WebsocketClientSpecImpl(WebsocketClientSpec.Builder builder) {
 		super(builder);
+		this.allowClientNoContext = builder.allowClientNoContext;
+		this.requestedServerNoContext = builder.requestedServerNoContext;
 		this.version = builder.version;
 	}
 }

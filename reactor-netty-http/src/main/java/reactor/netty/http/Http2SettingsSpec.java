@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2021 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2023 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -32,7 +32,7 @@ public final class Http2SettingsSpec {
 	public interface Builder {
 
 		/**
-		 * Build a new {@link Http2SettingsSpec}
+		 * Build a new {@link Http2SettingsSpec}.
 		 *
 		 * @return a new {@link Http2SettingsSpec}
 		 */
@@ -77,6 +77,14 @@ public final class Http2SettingsSpec {
 		 * @return {@code this}
 		 */
 		Builder maxHeaderListSize(long maxHeaderListSize);
+
+		/**
+		 * The connection is marked for closing once the number of all-time streams reaches {@code maxStreams}.
+		 *
+		 * @return {@code this}
+		 * @since 1.0.33
+		 */
+		Builder maxStreams(long maxStreams);
 
 		/**
 		 * Sets the {@code SETTINGS_ENABLE_PUSH} value.
@@ -148,6 +156,17 @@ public final class Http2SettingsSpec {
 	}
 
 	/**
+	 * Returns the configured {@code maxStreams} value or null.
+	 *
+	 * @return the configured {@code maxStreams} value or null
+	 * @since 1.0.33
+	 */
+	@Nullable
+	public Long maxStreams() {
+		return maxStreams;
+	}
+
+	/**
 	 * Returns the configured {@code SETTINGS_ENABLE_PUSH} value or null.
 	 *
 	 * @return the configured {@code SETTINGS_ENABLE_PUSH} value or null
@@ -171,12 +190,21 @@ public final class Http2SettingsSpec {
 				Objects.equals(maxConcurrentStreams, that.maxConcurrentStreams) &&
 				Objects.equals(maxFrameSize, that.maxFrameSize) &&
 				maxHeaderListSize.equals(that.maxHeaderListSize) &&
+				Objects.equals(maxStreams, that.maxStreams) &&
 				Objects.equals(pushEnabled, that.pushEnabled);
 	}
 
 	@Override
 	public int hashCode() {
-		return Objects.hash(headerTableSize, initialWindowSize, maxConcurrentStreams, maxFrameSize, maxHeaderListSize, pushEnabled);
+		int result = 1;
+		result = 31 * result + Long.hashCode(headerTableSize);
+		result = 31 * result + initialWindowSize;
+		result = 31 * result + Long.hashCode(maxConcurrentStreams);
+		result = 31 * result + maxFrameSize;
+		result = 31 * result + Long.hashCode(maxHeaderListSize);
+		result = 31 * result + Long.hashCode(maxStreams);
+		result = 31 * result + Boolean.hashCode(pushEnabled);
+		return result;
 	}
 
 	final Long headerTableSize;
@@ -184,19 +212,28 @@ public final class Http2SettingsSpec {
 	final Long maxConcurrentStreams;
 	final Integer maxFrameSize;
 	final Long maxHeaderListSize;
+	final Long maxStreams;
 	final Boolean pushEnabled;
 
 	Http2SettingsSpec(Build build) {
 		Http2Settings settings = build.http2Settings;
 		headerTableSize = settings.headerTableSize();
 		initialWindowSize = settings.initialWindowSize();
-		maxConcurrentStreams = settings.maxConcurrentStreams();
+		if (settings.maxConcurrentStreams() != null) {
+			maxConcurrentStreams = build.maxStreams != null ?
+					Math.min(settings.maxConcurrentStreams(), build.maxStreams) : settings.maxConcurrentStreams();
+		}
+		else {
+			maxConcurrentStreams = build.maxStreams;
+		}
 		maxFrameSize = settings.maxFrameSize();
 		maxHeaderListSize = settings.maxHeaderListSize();
+		maxStreams = build.maxStreams;
 		pushEnabled = settings.pushEnabled();
 	}
 
 	static final class Build implements Builder {
+		Long maxStreams;
 		final Http2Settings http2Settings = Http2Settings.defaultSettings();
 
 		@Override
@@ -231,6 +268,15 @@ public final class Http2SettingsSpec {
 		@Override
 		public Builder maxHeaderListSize(long maxHeaderListSize) {
 			http2Settings.maxHeaderListSize(maxHeaderListSize);
+			return this;
+		}
+
+		@Override
+		public Builder maxStreams(long maxStreams) {
+			if (maxStreams < 1) {
+				throw new IllegalArgumentException("maxStreams must be positive");
+			}
+			this.maxStreams = Long.valueOf(maxStreams);
 			return this;
 		}
 
