@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2021-2024 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -52,6 +52,8 @@ import java.util.function.Consumer;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
+ * This test class verifies {@link HttpServer} post form handling.
+ *
  * @author Violeta Georgieva
  * @since 1.0.11
  */
@@ -59,11 +61,12 @@ class HttpServerPostFormTests extends BaseHttpTest {
 
 	@Retention(RetentionPolicy.RUNTIME)
 	@Target(ElementType.METHOD)
-	@ParameterizedTest(name = "{displayName}({0}, {1})")
+	@ParameterizedTest
 	@MethodSource("data")
 	@interface ParameterizedPostFormTest {
 	}
 
+	@SuppressWarnings("deprecation")
 	static Object[][] data() throws Exception {
 		SelfSignedCertificate cert = new SelfSignedCertificate();
 		Http2SslContextSpec serverCtx = Http2SslContextSpec.forServer(cert.certificate(), cert.privateKey());

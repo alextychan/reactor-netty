@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2021 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2024 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,9 +18,13 @@ package reactor.netty.udp;
 import org.junit.jupiter.api.Test;
 import reactor.netty.resources.LoopResources;
 
+import java.time.Duration;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
+ * This test class verifies {@link UdpResources}.
+ *
  * @author Violeta Georgieva
  */
 class UdpResourcesTest {
@@ -37,7 +41,7 @@ class UdpResourcesTest {
 
 		UdpResources current = UdpResources.udpResources.get();
 		UdpResources.shutdownLater()
-		            .block();
+		            .block(Duration.ofSeconds(5));
 		assertThat(current.isDisposed()).isTrue();
 	}
 }

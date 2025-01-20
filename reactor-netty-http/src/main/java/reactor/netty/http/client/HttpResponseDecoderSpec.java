@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019-2021 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2019-2024 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,9 +16,6 @@
 package reactor.netty.http.client;
 
 import reactor.netty.http.HttpDecoderSpec;
-import reactor.netty.http.server.HttpRequestDecoderSpec;
-
-import java.util.Objects;
 
 /**
  * A configuration builder to fine tune the {@link io.netty.handler.codec.http.HttpClientCodec}
@@ -35,6 +32,7 @@ import java.util.Objects;
  *     <tr><td>{@link #DEFAULT_MAX_INITIAL_LINE_LENGTH}</td><td>4096</td></tr>
  *     <tr><td>{@link #DEFAULT_PARSE_HTTP_AFTER_CONNECT_REQUEST}</td><td>false</td></tr>
  *     <tr><td>{@link #DEFAULT_VALIDATE_HEADERS}</td><td>true</td></tr>
+ *     <tr><td>{@link #DEFAULT_ALLOW_PARTIAL_CHUNKS}</td><td>true</td></tr>
  * </table>
  *
  * @author Violeta Georgieva
@@ -65,7 +63,7 @@ public final class HttpResponseDecoderSpec extends HttpDecoderSpec<HttpResponseD
 
 	/**
 	 * Configure whether to throw an exception on a channel inactive
-	 * in case there was a missing response
+	 * in case there was a missing response.
 	 *
 	 * @param failOnMissingResponse true - throw an exception on a channel inactive
 	 *                              in case there was a missing response, otherwise false
@@ -105,11 +103,14 @@ public final class HttpResponseDecoderSpec extends HttpDecoderSpec<HttpResponseD
 
 	@Override
 	public int hashCode() {
-		return Objects.hash(super.hashCode(), failOnMissingResponse, parseHttpAfterConnectRequest);
+		int result = super.hashCode();
+		result = 31 * result + Boolean.hashCode(failOnMissingResponse);
+		result = 31 * result + Boolean.hashCode(parseHttpAfterConnectRequest);
+		return result;
 	}
 
 	/**
-	 * Build a {@link HttpRequestDecoderSpec}.
+	 * Build a {@link HttpResponseDecoderSpec}.
 	 */
 	HttpResponseDecoderSpec build() {
 		HttpResponseDecoderSpec decoder = new HttpResponseDecoderSpec();
@@ -122,6 +123,7 @@ public final class HttpResponseDecoderSpec extends HttpDecoderSpec<HttpResponseD
 		decoder.failOnMissingResponse = failOnMissingResponse;
 		decoder.parseHttpAfterConnectRequest = parseHttpAfterConnectRequest;
 		decoder.h2cMaxContentLength = h2cMaxContentLength;
+		decoder.allowPartialChunks = allowPartialChunks;
 		return decoder;
 	}
 }

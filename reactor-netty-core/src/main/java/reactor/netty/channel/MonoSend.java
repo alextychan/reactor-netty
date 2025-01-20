@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019-2021 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2019-2024 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -30,6 +30,8 @@ import reactor.core.publisher.Mono;
 import reactor.netty.ReactorNetty;
 
 /**
+ * An outbound-traffic API delegating to an underlying {@link Channel}.
+ *
  * @author Stephane Maldini
  */
 abstract class MonoSend<I, O> extends Mono<Void> {
@@ -56,7 +58,8 @@ abstract class MonoSend<I, O> extends Mono<Void> {
 		return (ToIntFunction) SIZE_OF;
 	}
 
-	static final int                    MAX_SIZE    = 128;
+	static final int                    MAX_SIZE =
+			Integer.parseInt(System.getProperty(ReactorNetty.REACTOR_NETTY_SEND_MAX_PREFETCH_SIZE, "128"));
 
 	static final int                    REFILL_SIZE = MAX_SIZE / 2;
 

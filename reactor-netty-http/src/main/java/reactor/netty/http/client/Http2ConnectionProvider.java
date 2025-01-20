@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2022 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2024 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -41,6 +41,7 @@ import reactor.netty.channel.ChannelMetricsRecorder;
 import reactor.netty.channel.ChannelOperations;
 import reactor.netty.resources.ConnectionProvider;
 import reactor.netty.resources.PooledConnectionProvider;
+import reactor.netty.transport.ClientTransportConfig;
 import reactor.netty.transport.TransportConfig;
 import reactor.netty.internal.shaded.reactor.pool.InstrumentedPool;
 import reactor.netty.internal.shaded.reactor.pool.PooledRef;
@@ -57,7 +58,6 @@ import java.time.Duration;
 import java.util.Queue;
 import java.util.function.BiPredicate;
 import java.util.function.Function;
-import java.util.function.Supplier;
 
 import static reactor.netty.ReactorNetty.format;
 import static reactor.netty.ReactorNetty.getChannelContext;
@@ -105,15 +105,29 @@ final class Http2ConnectionProvider extends PooledConnectionProvider<Connection>
 			InstrumentedPool<Connection> pool,
 			MonoSink<Connection> sink,
 			Context currentContext) {
+		return createDisposableAcquire(config, connectionObserver, pendingAcquireTimeout, pool, null, sink, currentContext);
+	}
+
+	@Override
+	protected CoreSubscriber<PooledRef<Connection>> createDisposableAcquire(
+			TransportConfig config,
+			ConnectionObserver connectionObserver,
+			long pendingAcquireTimeout,
+			InstrumentedPool<Connection> pool,
+			SocketAddress remoteAddress,
+			MonoSink<Connection> sink,
+			Context currentContext) {
 		boolean acceptGzip = false;
 		ChannelMetricsRecorder metricsRecorder = config.metricsRecorder() != null ? config.metricsRecorder().get() : null;
+		SocketAddress proxyAddress = ((ClientTransportConfig<?>) config).proxyProvider() != null ?
+				((ClientTransportConfig<?>) config).proxyProvider().getProxyAddress() : null;
 		Function<String, String> uriTagValue = null;
 		if (config instanceof HttpClientConfig) {
 			acceptGzip = ((HttpClientConfig) config).acceptGzip;
 			uriTagValue = ((HttpClientConfig) config).uriTagValue;
 		}
 		return new DisposableAcquire(connectionObserver, config.channelOperationsProvider(),
-				acceptGzip, metricsRecorder, pendingAcquireTimeout, pool, sink, currentContext, uriTagValue);
+				acceptGzip, metricsRecorder, pendingAcquireTimeout, pool, proxyAddress, remoteAddress, sink, currentContext, uriTagValue);
 	}
 
 	@Override
@@ -121,8 +135,18 @@ final class Http2ConnectionProvider extends PooledConnectionProvider<Connection>
 			TransportConfig config,
 			PooledConnectionProvider.PoolFactory<Connection> poolFactory,
 			SocketAddress remoteAddress,
-			AddressResolverGroup<?> resolverGroup) {
-		return new PooledConnectionAllocator(parent, config, poolFactory, () -> remoteAddress, resolverGroup).pool;
+			@Nullable AddressResolverGroup<?> resolverGroup) {
+		return new PooledConnectionAllocator(parent, config, poolFactory, remoteAddress, resolverGroup).pool;
+	}
+
+	@Override
+	protected InstrumentedPool<Connection> createPool(
+			String id,
+			TransportConfig config,
+			PooledConnectionProvider.PoolFactory<Connection> poolFactory,
+			SocketAddress remoteAddress,
+			@Nullable AddressResolverGroup<?> resolverGroup) {
+		return new PooledConnectionAllocator(id, name(), parent, config, poolFactory, remoteAddress, resolverGroup).pool;
 	}
 
 	@Override
@@ -217,11 +241,13 @@ final class Http2ConnectionProvider extends PooledConnectionProvider<Connection>
 		final ChannelMetricsRecorder metricsRecorder;
 		final long pendingAcquireTimeout;
 		final InstrumentedPool<Connection> pool;
+		final SocketAddress proxyAddress;
 		final boolean retried;
 		final MonoSink<Connection> sink;
 		final Function<String, String> uriTagValue;
 
 		PooledRef<Connection> pooledRef;
+		SocketAddress remoteAddress;
 		Subscription subscription;
 
 		DisposableAcquire(
@@ -231,6 +257,8 @@ final class Http2ConnectionProvider extends PooledConnectionProvider<Connection>
 				@Nullable ChannelMetricsRecorder metricsRecorder,
 				long pendingAcquireTimeout,
 				InstrumentedPool<Connection> pool,
+				@Nullable SocketAddress proxyAddress,
+				@Nullable SocketAddress remoteAddress,
 				MonoSink<Connection> sink,
 				Context currentContext,
 				@Nullable Function<String, String> uriTagValue) {
@@ -242,6 +270,8 @@ final class Http2ConnectionProvider extends PooledConnectionProvider<Connection>
 			this.metricsRecorder = metricsRecorder;
 			this.pendingAcquireTimeout = pendingAcquireTimeout;
 			this.pool = pool;
+			this.proxyAddress = proxyAddress;
+			this.remoteAddress = remoteAddress;
 			this.retried = false;
 			this.sink = sink;
 			this.uriTagValue = uriTagValue;
@@ -256,6 +286,8 @@ final class Http2ConnectionProvider extends PooledConnectionProvider<Connection>
 			this.metricsRecorder = parent.metricsRecorder;
 			this.pendingAcquireTimeout = parent.pendingAcquireTimeout;
 			this.pool = parent.pool;
+			this.proxyAddress = parent.proxyAddress;
+			this.remoteAddress = parent.remoteAddress;
 			this.retried = true;
 			this.sink = parent.sink;
 			this.uriTagValue = parent.uriTagValue;
@@ -285,6 +317,12 @@ final class Http2ConnectionProvider extends PooledConnectionProvider<Connection>
 		public void onNext(PooledRef<Connection> pooledRef) {
 			this.pooledRef = pooledRef;
 			Channel channel = pooledRef.poolable().channel();
+
+			if (remoteAddress == null) {
+				// This can happen only if there is a custom implementation of PooledConnectionProvider.createDisposableAcquire(...),
+				// with the default implementation, remoteAddress is always initialized.
+				remoteAddress = channel.remoteAddress();
+			}
 
 			ConnectionObserver current = channel.attr(OWNER)
 			                                    .getAndSet(this);
@@ -345,10 +383,10 @@ final class Http2ConnectionProvider extends PooledConnectionProvider<Connection>
 
 		@Override
 		public void operationComplete(Future<Http2StreamChannel> future) {
-			Channel channel = pooledRef.poolable().channel();
-			Http2Pool.Http2PooledRef http2PooledRef = http2PooledRef(pooledRef);
-			ChannelHandlerContext frameCodec = http2PooledRef.slot.http2FrameCodecCtx();
 			if (future.isSuccess()) {
+				Channel channel = pooledRef.poolable().channel();
+				Http2Pool.Http2PooledRef http2PooledRef = http2PooledRef(pooledRef);
+				ChannelHandlerContext frameCodec = http2PooledRef.slot.http2FrameCodecCtx();
 				Http2StreamChannel ch = future.getNow();
 
 				if (!channel.isActive() || frameCodec == null ||
@@ -374,7 +412,7 @@ final class Http2ConnectionProvider extends PooledConnectionProvider<Connection>
 						setChannelContext(ch, currentContext());
 					}
 					HttpClientConfig.addStreamHandlers(ch, obs.then(new HttpClientConfig.StreamConnectionObserver(currentContext())),
-							opsFactory, acceptGzip, metricsRecorder, -1, uriTagValue);
+							opsFactory, acceptGzip, metricsRecorder, proxyAddress, remoteAddress, -1, uriTagValue);
 
 					ChannelOperations<?, ?> ops = ChannelOperations.get(ch);
 					if (ops != null) {
@@ -503,25 +541,40 @@ final class Http2ConnectionProvider extends PooledConnectionProvider<Connection>
 		final ConnectionProvider parent;
 		final HttpClientConfig config;
 		final InstrumentedPool<Connection> pool;
-		final Supplier<SocketAddress> remoteAddress;
+		final SocketAddress remoteAddress;
 		final AddressResolverGroup<?> resolver;
 
 		PooledConnectionAllocator(
 				ConnectionProvider parent,
 				TransportConfig config,
 				PoolFactory<Connection> poolFactory,
-				Supplier<SocketAddress> remoteAddress,
-				AddressResolverGroup<?> resolver) {
+				SocketAddress remoteAddress,
+				@Nullable AddressResolverGroup<?> resolver) {
+			this(null, null, parent, config, poolFactory, remoteAddress, resolver);
+		}
+
+		PooledConnectionAllocator(
+				@Nullable String id,
+				@Nullable String name,
+				ConnectionProvider parent,
+				TransportConfig config,
+				PoolFactory<Connection> poolFactory,
+				SocketAddress remoteAddress,
+				@Nullable AddressResolverGroup<?> resolver) {
 			this.parent = parent;
 			this.config = (HttpClientConfig) config;
 			this.remoteAddress = remoteAddress;
 			this.resolver = resolver;
-			this.pool = poolFactory.newPool(connectChannel(), null, DEFAULT_DESTROY_HANDLER, DEFAULT_EVICTION_PREDICATE,
-					poolConfig -> new Http2Pool(poolConfig, poolFactory.allocationStrategy()));
+			this.pool = id == null ?
+					poolFactory.newPool(connectChannel(), null, DEFAULT_DESTROY_HANDLER, DEFAULT_EVICTION_PREDICATE,
+							poolConfig -> new Http2Pool(poolConfig, poolFactory.allocationStrategy())) :
+					poolFactory.newPool(connectChannel(), DEFAULT_DESTROY_HANDLER, DEFAULT_EVICTION_PREDICATE,
+							new MicrometerPoolMetricsRecorder(id, name, remoteAddress),
+							poolConfig -> new Http2Pool(poolConfig, poolFactory.allocationStrategy()));
 		}
 
 		Publisher<Connection> connectChannel() {
-			return parent.acquire(config, new DelegatingConnectionObserver(), remoteAddress, resolver)
+			return parent.acquire(config, new DelegatingConnectionObserver(), () -> remoteAddress, resolver)
 				         .map(conn -> conn);
 		}
 

@@ -1,0 +1,134 @@
+[[faq]]
+= Frequently Asked Questions
+
+[[faq.proxy-connect-method]]
+== Connection to the proxy cannot be established
+include::partial$proxy.adoc[tag=proxy-connect-method]
+
+[[faq.logging-prefix]]
+== What is the meaning of the information that is prepended to every log record?
+Reactor Netty adds information for the connection at the beginning of every log record (when this is possible).
+There is a slight difference in the details for the connection when you use `TCP`, `UDP`, `HTTP/1.1` or `HTTP/2`.
+
+[[tcp-and-udp]]
+=== TCP and UDP
+In case of `TCP` and `UDP`, the following is added at the beginning of every log record: the id of the underlying connection, local and remote addresses.
+
+[source,text,indent=0]
+----
+Examples
+[a1566d55, L:/[0:0:0:0:0:0:0:1]:53446 - R:/[0:0:0:0:0:0:0:1]:53444]
+[a1566d55, L:/[0:0:0:0:0:0:0:1]:53446 ! R:/[0:0:0:0:0:0:0:1]:53444]
+
+Format
+[<CONNECTION_ID>, L:<LOCAL_ADDRESS> <CONNECTION_OPENED_CLOSED> R:<REMOTE_ADDRESS>]
+<CONNECTION_ID>: a1566d55
+<LOCAL_ADDRESS>: [0:0:0:0:0:0:0:1]:53446
+<CONNECTION_OPENED_CLOSED>: - (connection opened)
+                            ! (connection closed)
+<REMOTE_ADDRESS>: [0:0:0:0:0:0:0:1]:53444
+----
+
+[[http1]]
+=== HTTP/1.1
+In case of `HTTP/1.1`, the following is added at the beginning of every log record: the id of the underlying connection,
+the serial number of the request received on that connection, local and remote addresses.
+
+[source,text,indent=0]
+----
+Examples
+[a1566d55-5, L:/[0:0:0:0:0:0:0:1]:53446 - R:/[0:0:0:0:0:0:0:1]:53444]
+[a1566d55-5, L:/[0:0:0:0:0:0:0:1]:53446 ! R:/[0:0:0:0:0:0:0:1]:53444]
+
+Format
+[<CONNECTION_ID>-<REQUEST_NUMBER>, L:<LOCAL_ADDRESS> <CONNECTION_OPENED_CLOSED> R:<REMOTE_ADDRESS>]
+<CONNECTION_ID>: a1566d55
+<REQUEST_NUMBER>: 5
+<LOCAL_ADDRESS>: [0:0:0:0:0:0:0:1]:53446
+<CONNECTION_OPENED_CLOSED>: - (connection opened)
+                            ! (connection closed)
+<REMOTE_ADDRESS>: [0:0:0:0:0:0:0:1]:53444
+----
+
+[[http2]]
+=== HTTP/2
+In case of `HTTP/2`, the following is added at the beginning of every log record: the id of the underlying connection,
+local and remote addresses, the id of the stream received on that connection.
+
+[source,text,indent=0]
+----
+Examples
+[a1566d55, L:/[0:0:0:0:0:0:0:1]:53446 - R:/[0:0:0:0:0:0:0:1]:53444](H2 - 5)
+[a1566d55, L:/[0:0:0:0:0:0:0:1]:53446 ! R:/[0:0:0:0:0:0:0:1]:53444](H2 - 5)
+
+Format
+[<CONNECTION_ID>, L:<LOCAL_ADDRESS> <CONNECTION_OPENED_CLOSED> R:<REMOTE_ADDRESS>]<STREAM_ID>
+<CONNECTION_ID>: a1566d55
+<LOCAL_ADDRESS>: [0:0:0:0:0:0:0:1]:53446
+<CONNECTION_OPENED_CLOSED>: - (connection opened)
+                            ! (connection closed)
+<REMOTE_ADDRESS>: [0:0:0:0:0:0:0:1]:53444
+<STREAM_ID>: (H2 - 5)
+----
+
+[[faq.logging-correlation]]
+== How can I extract all log records for a particular HTTP request?
+Reactor Netty adds information for the connection at the beginning of every log record (when this is possible).
+Use the id of the connection in order to extract all log records for a particular HTTP request.
+For more information see xref:faq.adoc#faq.logging-prefix[What is the meaning of the information that is prepended to every log record?]
+
+[[faq.memory-leaks]]
+== How can I debug a memory leak?
+By default, Reactor Netty uses direct memory as this is more performant
+when there are many native I/O operations (working with sockets), as this can remove the copying operations.
+As allocation and deallocation are expensive operations, Reactor Netty also uses pooled buffers by default.
+For more information, see https://github.com/netty/netty/wiki/Reference-counted-objects[Reference Counted Objects].
+
+To be able to debug memory issues with the direct memory and the pooled buffers, Netty provides a special memory leak detection mechanism.
+Follow the instructions for https://github.com/netty/netty/wiki/Reference-counted-objects#troubleshooting-buffer-leaks[Troubleshooting Buffer Leaks]
+to enable this mechanism. In addition to the instructions provided by Netty, Reactor Netty provides a special
+logger (`_reactor.netty.channel.LeakDetection`) that helps to identify where the memory leak might be located inside Reactor Netty
+or whether Reactor Netty already forwarded the ownership of the buffers to the application/framework.
+By default, this logger is disabled. To enable it, increase the log level to `DEBUG`.
+
+Another way to detect memory leaks is to monitor `reactor.netty.bytebuf.allocator.active.heap.memory` and `reactor.netty.bytebuf.allocator.active.direct.memory` meters:
+
+- The `reactor.netty.bytebuf.allocator.active.heap.memory` provides the actual bytes consumed by in-use buffers allocated from heap buffer pools
+- The `reactor.netty.bytebuf.allocator.active.direct.memory` provides the actual bytes consumed by in-use buffers allocated from direct buffer pools
+
+If the above meters are constantly growing, then it's likely that there is a buffer memory leak.
+
+NOTE: Consider reducing the used memory when debugging memory leak issues (e.g `-XX:MaxDirectMemorySize`, `-Xms`, `-Xmx`).
+The less memory the application has, the sooner the memory leak will happen.
+
+[[faq.connection-closed]]
+== How can I debug "Connection prematurely closed BEFORE response"?
+By default, Reactor Netty clients use connection pooling. When a connection is acquired from the connection pool, it is checked to see whether it is still open.
+However, the connection can be closed at any time after the acquisition. There are many reasons that can cause a connection to be closed.
+In most cases, the client might not send directly to the server. Instead, there might be other network components (proxies, load balancers, and so on) between them.
+
+If, on the client side, you observe `Connection prematurely closed BEFORE response`, perform the following checks to identify the reason for the connection being closed:
+
+* Obtain a https://en.wikipedia.org/wiki/Tcpdump[TCP dump] and check which peer sends a FIN/RST signal.
+* Check your network connection.
+* Check your Firewall and VPN.
+* Check for any proxies and load balancers.
+** Do they have some kind of idle timeout configuration (the connection is closed when there is no incoming data for a certain period of time)?
+** Do they silently drop the idle connections without sending any signal?
+In order to verify whether this might be the issue, you can enable the TCP keep-alive as described in the section xref:http-client.adoc#connection-timeout[Connection Timeout].
+Issues related to TCP keep-alive configuration on various load balancers were reported in the past.
+*** https://github.com/reactor/reactor-netty/issues/764#issuecomment-1011373248
+*** https://github.com/reactor/reactor-netty/issues/1510
+*** https://github.com/reactor/reactor-netty/issues/1843
+* Check the target server.
+** Are there configurations related to any of the following?
+*** idle timeout (the connection is closed when there is no incoming data for a certain period of time)
+*** limit for buffering data in memory
+*** multipart exceeds the max file size limit
+*** bad request
+*** max keep alive requests (the connection is closed when the requests reach the configured maximum number)
+*** rate limit configuration
+** Is the target server in a shutting down state?
+
+Consider checking xref:http-client.adoc#timeout-configuration[Timeout Configuration]. The section describes various timeout configuration options that are available for Reactor Netty clients.
+Configuring a proper timeout may improve or solve issues in the communication process.

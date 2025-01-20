@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019-2022 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2019-2024 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -43,17 +43,18 @@ import static reactor.netty.Metrics.STATUS;
 import static reactor.netty.Metrics.URI;
 import static reactor.netty.http.server.HttpServerMeters.CONNECTIONS_ACTIVE;
 import static reactor.netty.http.server.HttpServerMeters.STREAMS_ACTIVE;
+import static reactor.netty.Metrics.formatSocketAddress;
 
 /**
+ * {@link HttpServerMetricsRecorder} for Reactor Netty built-in integration with Micrometer.
+ *
  * @author Violeta Georgieva
  * @since 0.9
  */
 final class MicrometerHttpServerMetricsRecorder extends MicrometerHttpMetricsRecorder implements HttpServerMetricsRecorder {
 
-	final static MicrometerHttpServerMetricsRecorder INSTANCE = new MicrometerHttpServerMetricsRecorder();
-	private final static String PROTOCOL_VALUE_HTTP = "http";
-	private final LongAdder activeConnectionsAdder = new LongAdder();
-	private final LongAdder activeStreamsAdder = new LongAdder();
+	static final MicrometerHttpServerMetricsRecorder INSTANCE = new MicrometerHttpServerMetricsRecorder();
+	private static final String PROTOCOL_VALUE_HTTP = "http";
 	private final ConcurrentMap<String, LongAdder> activeConnectionsCache = new ConcurrentHashMap<>();
 	private final ConcurrentMap<String, LongAdder> activeStreamsCache = new ConcurrentHashMap<>();
 	private final ConcurrentMap<String, DistributionSummary> dataReceivedCache = new ConcurrentHashMap<>();
@@ -66,7 +67,7 @@ final class MicrometerHttpServerMetricsRecorder extends MicrometerHttpMetricsRec
 
 	@Override
 	public void recordDataReceivedTime(String uri, String method, Duration time) {
-		MeterKey meterKey = new MeterKey(uri, null, method, null);
+		MeterKey meterKey = new MeterKey(uri, null, null, method, null);
 		Timer dataReceivedTime = MapUtils.computeIfAbsent(dataReceivedTimeCache, meterKey,
 				key -> filter(Timer.builder(name() + DATA_RECEIVED_TIME)
 				                   .tags(HttpServerMeters.DataReceivedTimeTags.URI.asString(), uri,
@@ -79,7 +80,7 @@ final class MicrometerHttpServerMetricsRecorder extends MicrometerHttpMetricsRec
 
 	@Override
 	public void recordDataSentTime(String uri, String method, String status, Duration time) {
-		MeterKey meterKey = new MeterKey(uri, null, method, status);
+		MeterKey meterKey = new MeterKey(uri, null, null, method, status);
 		Timer dataSentTime = MapUtils.computeIfAbsent(dataSentTimeCache, meterKey,
 				key -> filter(Timer.builder(name() + DATA_SENT_TIME)
 				                   .tags(HttpServerMeters.DataSentTimeTags.URI.asString(), uri,
@@ -101,11 +102,11 @@ final class MicrometerHttpServerMetricsRecorder extends MicrometerHttpMetricsRec
 
 	@Nullable
 	final Timer getResponseTimeTimer(String name, String uri, String method, String status) {
-		MeterKey meterKey = new MeterKey(uri, null, method, status);
+		MeterKey meterKey = new MeterKey(uri, null, null, method, status);
 		return MapUtils.computeIfAbsent(responseTimeCache, meterKey,
 				key -> filter(Timer.builder(name)
-						.tags(URI, uri, METHOD, method, STATUS, status)
-						.register(REGISTRY)));
+				                   .tags(URI, uri, METHOD, method, STATUS, status)
+				                   .register(REGISTRY)));
 	}
 
 	@Override
@@ -206,24 +207,26 @@ final class MicrometerHttpServerMetricsRecorder extends MicrometerHttpMetricsRec
 	}
 
 	@Nullable
-	private LongAdder getActiveStreamsAdder(SocketAddress localAddress) {
-		String address = reactor.netty.Metrics.formatSocketAddress(localAddress);
+	LongAdder getActiveStreamsAdder(SocketAddress localAddress) {
+		String address = formatSocketAddress(localAddress);
 		return MapUtils.computeIfAbsent(activeStreamsCache, address,
 				key -> {
+					LongAdder activeStreamsAdder = new LongAdder();
 					Gauge gauge = filter(
 							Gauge.builder(STREAMS_ACTIVE.getName(), activeStreamsAdder, LongAdder::longValue)
-									.tags(HttpServerMeters.StreamsActiveTags.URI.asString(), PROTOCOL_VALUE_HTTP,
-											HttpServerMeters.StreamsActiveTags.LOCAL_ADDRESS.asString(), address)
-									.register(REGISTRY));
+							     .tags(HttpServerMeters.StreamsActiveTags.URI.asString(), PROTOCOL_VALUE_HTTP,
+							           HttpServerMeters.StreamsActiveTags.LOCAL_ADDRESS.asString(), address)
+							     .register(REGISTRY));
 					return gauge != null ? activeStreamsAdder : null;
 				});
 	}
 
 	@Nullable
-	private LongAdder getServerConnectionAdder(SocketAddress localAddress) {
-		String address = reactor.netty.Metrics.formatSocketAddress(localAddress);
+	LongAdder getServerConnectionAdder(SocketAddress localAddress) {
+		String address = formatSocketAddress(localAddress);
 		return MapUtils.computeIfAbsent(activeConnectionsCache, address,
 				key -> {
+					LongAdder activeConnectionsAdder = new LongAdder();
 					Gauge gauge = filter(
 							Gauge.builder(CONNECTIONS_ACTIVE.getName(), activeConnectionsAdder, LongAdder::longValue)
 							     .tags(HttpServerMeters.ConnectionsActiveTags.URI.asString(), PROTOCOL_VALUE_HTTP,

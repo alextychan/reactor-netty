@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021-2022 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2021-2024 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -59,9 +59,10 @@ import java.util.function.Supplier;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * This class tests https://github.com/reactor/reactor-netty/issues/1472
+ * This class tests https://github.com/reactor/reactor-netty/issues/1472.
  */
 class ConnectionPoolTests extends BaseHttpTest {
+	static final EventExecutor executor = new DefaultEventExecutor();
 
 	static DisposableServer server1;
 	static DisposableServer server2;
@@ -70,11 +71,11 @@ class ConnectionPoolTests extends BaseHttpTest {
 	static ConnectionProvider provider;
 	static LoopResources loop;
 	static Supplier<ChannelMetricsRecorder> metricsRecorderSupplier;
-	static final EventExecutor executor = new DefaultEventExecutor();
 
 	HttpClient client;
 
 	@BeforeAll
+	@SuppressWarnings("deprecation")
 	static void prepare() throws CertificateException {
 		HttpServer server = createServer();
 
@@ -115,7 +116,7 @@ class ConnectionPoolTests extends BaseHttpTest {
 		loop.disposeLater()
 		    .block(Duration.ofSeconds(5));
 		executor.shutdownGracefully()
-				.get(30, TimeUnit.SECONDS);
+		        .get(30, TimeUnit.SECONDS);
 	}
 
 	@BeforeEach
@@ -166,7 +167,7 @@ class ConnectionPoolTests extends BaseHttpTest {
 		try {
 			HttpClient localClient1 =
 					client.port(server1.port())
-							.channelGroup(group1);
+					      .channelGroup(group1);
 			HttpClient localClient2 = localClient1.channelGroup(group2);
 			checkResponsesAndChannelsStates(
 					"server1-ConnectionPoolTests",
@@ -176,9 +177,9 @@ class ConnectionPoolTests extends BaseHttpTest {
 		}
 		finally {
 			group1.close()
-					.get(30, TimeUnit.SECONDS);
+			      .get(30, TimeUnit.SECONDS);
 			group2.close()
-					.get(30, TimeUnit.SECONDS);
+			      .get(30, TimeUnit.SECONDS);
 		}
 	}
 
@@ -359,6 +360,7 @@ class ConnectionPoolTests extends BaseHttpTest {
 	}
 
 	@Test
+	@SuppressWarnings("deprecation")
 	void testClientWithProtocols() {
 		Http11SslContextSpec http11SslContextSpec =
 				Http11SslContextSpec.forClient()
@@ -381,6 +383,7 @@ class ConnectionPoolTests extends BaseHttpTest {
 	}
 
 	@Test
+	@SuppressWarnings("deprecation")
 	void testClientWithSecurity_1() {
 		Http11SslContextSpec http11SslContextSpec1 =
 				Http11SslContextSpec.forClient()
@@ -402,6 +405,7 @@ class ConnectionPoolTests extends BaseHttpTest {
 	}
 
 	@Test
+	@SuppressWarnings("deprecation")
 	void testClientWithSecurity_2() {
 		HttpClient localClient1 =
 				client.port(server4.port())
@@ -421,11 +425,11 @@ class ConnectionPoolTests extends BaseHttpTest {
 				localClient2);
 	}
 
-	private void checkResponsesAndChannelsStates(String expectedClient1Response, HttpClient client1) {
+	private static void checkResponsesAndChannelsStates(String expectedClient1Response, HttpClient client1) {
 		checkResponsesAndChannelsStates(expectedClient1Response, null, client1, null);
 	}
 
-	private void checkResponsesAndChannelsStates(
+	private static void checkResponsesAndChannelsStates(
 			String expectedClient1Response,
 			@Nullable String expectedClient2Response,
 			HttpClient client1,
@@ -433,7 +437,7 @@ class ConnectionPoolTests extends BaseHttpTest {
 		checkResponsesAndChannelsStates(expectedClient1Response, expectedClient2Response, client1, client2, false);
 	}
 
-	private void checkResponsesAndChannelsStates(
+	private static void checkResponsesAndChannelsStates(
 				String expectedClient1Response,
 				@Nullable String expectedClient2Response,
 				HttpClient client1,

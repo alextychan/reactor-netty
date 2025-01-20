@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017-2022 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2017-2024 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -46,14 +46,14 @@ import reactor.netty.transport.logging.AdvancedByteBufFormat;
 import reactor.util.annotation.Nullable;
 
 /**
- * Proxy configuration
+ * Proxy configuration.
  *
  * @author Violeta Georgieva
  */
 public final class ProxyProvider {
 
 	/**
-	 * Creates a builder for {@link ProxyProvider ProxyProvider}
+	 * Creates a builder for {@link ProxyProvider ProxyProvider}.
 	 *
 	 * @return a new ProxyProvider builder
 	 */
@@ -62,35 +62,35 @@ public final class ProxyProvider {
 	}
 
 	final String username;
-	final Function<? super String, ? extends String> password;
-	final Supplier<? extends InetSocketAddress> address;
+	final String password;
+	final SocketAddress address;
 	final Predicate<SocketAddress> nonProxyHostPredicate;
-	final Supplier<? extends HttpHeaders> httpHeaders;
+	final HttpHeaders httpHeaders;
 	final Proxy type;
 	final long connectTimeoutMillis;
 
 	ProxyProvider(ProxyProvider.Build builder) {
 		this.username = builder.username;
-		this.password = builder.password;
+		this.password = builder.password != null ? builder.password : getPasswordValue(builder.passwordFunction);
 		this.nonProxyHostPredicate = builder.nonProxyHostPredicate;
 		if (Objects.isNull(builder.address)) {
 			if (builder.host != null) {
-				this.address = () -> AddressUtils.createResolved(builder.host, builder.port);
+				this.address = AddressUtils.createResolved(builder.host, builder.port);
 			}
 			else {
 				throw new IllegalArgumentException("Neither address nor host is specified");
 			}
 		}
 		else {
-			this.address = builder.address;
+			this.address = builder.address.get();
 		}
-		this.httpHeaders = builder.httpHeaders;
+		this.httpHeaders = builder.httpHeaders.get();
 		this.type = builder.type;
 		this.connectTimeoutMillis = builder.connectTimeoutMillis;
 	}
 
 	/**
-	 * The proxy type
+	 * The proxy type.
 	 *
 	 * @return The proxy type
 	 */
@@ -102,14 +102,35 @@ public final class ProxyProvider {
 	 * The supplier for the address to connect to.
 	 *
 	 * @return The supplier for the address to connect to.
+	 * @deprecated as of 1.2.0. Prefer using {@link #getSocketAddress()}.
+	 * This method will be removed in 1.3.0.
 	 */
+	@Deprecated
 	public final Supplier<? extends InetSocketAddress> getAddress() {
+		return () -> (InetSocketAddress) this.address;
+	}
+
+	/**
+	 * The supplier for the address to connect to.
+	 *
+	 * @return The supplier for the address to connect to.
+	 */
+	public final Supplier<? extends SocketAddress> getSocketAddress() {
+		return () -> this.address;
+	}
+
+	/**
+	 * The address to connect to.
+	 *
+	 * @return The address to connect to.
+	 */
+	public final SocketAddress getProxyAddress() {
 		return this.address;
 	}
 
 	/**
 	 * A predicate {@link Predicate} on {@link SocketAddress} that returns true when the provided address should be
-	 * reached directly, bypassing the proxy
+	 * reached directly, bypassing the proxy.
 	 *
 	 * @return The predicate {@link Predicate} to test the incoming {@link SocketAddress} if it should be reached
 	 * directly, bypassing the proxy
@@ -120,33 +141,28 @@ public final class ProxyProvider {
 	}
 
 	/**
-	 * Return a new eventual {@link ProxyHandler}
+	 * Return a new eventual {@link ProxyHandler}.
 	 *
 	 * @return a new eventual {@link ProxyHandler}
 	 */
 	public final ProxyHandler newProxyHandler() {
-		InetSocketAddress proxyAddr = this.address.get();
-
 		final boolean b = Objects.nonNull(username) && Objects.nonNull(password);
-
-		String username = this.username;
-		String password = b ? this.password.apply(username) : null;
 
 		final ProxyHandler proxyHandler;
 		switch (this.type) {
 			case HTTP:
 				proxyHandler = b ?
-						new HttpProxyHandler(proxyAddr, username, password, this.httpHeaders.get()) :
-						new HttpProxyHandler(proxyAddr, this.httpHeaders.get());
+						new HttpProxyHandler(address, username, password, this.httpHeaders) :
+						new HttpProxyHandler(address, this.httpHeaders);
 				break;
 			case SOCKS4:
-				proxyHandler = Objects.nonNull(username) ? new Socks4ProxyHandler(proxyAddr, username) :
-						new Socks4ProxyHandler(proxyAddr);
+				proxyHandler = Objects.nonNull(username) ? new Socks4ProxyHandler(address, username) :
+						new Socks4ProxyHandler(address);
 				break;
 			case SOCKS5:
 				proxyHandler = b ?
-						new Socks5ProxyHandler(proxyAddr, username, password) :
-						new Socks5ProxyHandler(proxyAddr);
+						new Socks5ProxyHandler(address, username, password) :
+						new Socks5ProxyHandler(address);
 				break;
 			default:
 				throw new IllegalArgumentException("Proxy type unsupported : " + this.type);
@@ -167,7 +183,7 @@ public final class ProxyProvider {
 	}
 
 	/**
-	 * Proxy Type
+	 * Proxy Type.
 	 */
 	public enum Proxy {
 		HTTP, SOCKS4, SOCKS5
@@ -195,7 +211,7 @@ public final class ProxyProvider {
 	@Override
 	public String toString() {
 		return "ProxyProvider {" +
-				"address=" + address.get() +
+				"address=" + address +
 				", nonProxyHosts=" + nonProxyHostPredicate +
 				", type=" + type +
 				'}';
@@ -211,30 +227,37 @@ public final class ProxyProvider {
 		}
 		ProxyProvider that = (ProxyProvider) o;
 		return Objects.equals(username, that.username) &&
-				Objects.equals(getPasswordValue(), that.getPasswordValue()) &&
-				Objects.equals(getAddress().get(), that.getAddress().get()) &&
+				Objects.equals(password, that.password) &&
+				Objects.equals(address, that.address) &&
 				getNonProxyHostsValue() == that.getNonProxyHostsValue() &&
-				Objects.equals(httpHeaders.get(), that.httpHeaders.get()) &&
-				getType() == that.getType() &&
+				Objects.equals(httpHeaders, that.httpHeaders) &&
+				type == that.type &&
 				connectTimeoutMillis == that.connectTimeoutMillis;
 	}
 
 	@Override
 	public int hashCode() {
-		return Objects.hash(
-				username, getPasswordValue(), getAddress().get(), getNonProxyHostsValue(), httpHeaders.get(), getType(), connectTimeoutMillis);
+		int result = 1;
+		result = 31 * result + Objects.hashCode(username);
+		result = 31 * result + Objects.hashCode(password);
+		result = 31 * result + Objects.hashCode(address);
+		result = 31 * result + Boolean.hashCode(getNonProxyHostsValue());
+		result = 31 * result + Objects.hashCode(httpHeaders);
+		result = 31 * result + Objects.hashCode(type);
+		result = 31 * result + Long.hashCode(connectTimeoutMillis);
+		return result;
 	}
 
 	private boolean getNonProxyHostsValue() {
-		return nonProxyHostPredicate.test(getAddress().get());
+		return nonProxyHostPredicate.test(address);
 	}
 
 	@Nullable
-	private String getPasswordValue() {
-		if (username == null || password == null) {
+	private String getPasswordValue(@Nullable Function<? super String, ? extends String> passwordFunction) {
+		if (username == null || passwordFunction == null) {
 			return null;
 		}
-		return password.apply(username);
+		return passwordFunction.apply(username);
 	}
 
 	static final LoggingHandler LOGGING_HANDLER =
@@ -304,17 +327,17 @@ public final class ProxyProvider {
 		String nonProxyHosts = properties.getProperty(HTTP_NON_PROXY_HOSTS, DEFAULT_NON_PROXY_HOSTS);
 		RegexShouldProxyPredicate transformedNonProxyHosts = RegexShouldProxyPredicate.fromWildcardedPattern(nonProxyHosts);
 
-		ProxyProvider.Builder proxy = ProxyProvider.builder()
-				.type(ProxyProvider.Proxy.HTTP)
+		ProxyProvider.Build proxy = new ProxyProvider.Build();
+		proxy.type(ProxyProvider.Proxy.HTTP)
 				.host(hostname)
 				.port(port)
 				.nonProxyHostsPredicate(transformedNonProxyHosts);
 
 		if (properties.containsKey(userProperty)) {
-			proxy = proxy.username(properties.getProperty(userProperty));
+			proxy.username(properties.getProperty(userProperty));
 
 			if (properties.containsKey(passwordProperty)) {
-				proxy = proxy.password(u -> properties.getProperty(passwordProperty));
+				proxy.password(properties.getProperty(passwordProperty));
 			}
 			else {
 				throw new NullPointerException("Proxy username is set via '" + userProperty + "', but '" + passwordProperty + "' is not set.");
@@ -335,16 +358,16 @@ public final class ProxyProvider {
 		ProxyProvider.Proxy type = SOCKS_VERSION_5.equals(version) ? Proxy.SOCKS5 : Proxy.SOCKS4;
 		int port = parsePort(properties.getProperty(SOCKS_PROXY_PORT, "1080"), SOCKS_PROXY_PORT);
 
-		ProxyProvider.Builder proxy = ProxyProvider.builder()
-				.type(type)
+		ProxyProvider.Build proxy = new ProxyProvider.Build();
+		proxy.type(type)
 				.host(hostname)
 				.port(port);
 
 		if (properties.containsKey(SOCKS_USERNAME)) {
-			proxy = proxy.username(properties.getProperty(SOCKS_USERNAME));
+			proxy.username(properties.getProperty(SOCKS_USERNAME));
 		}
 		if (properties.containsKey(SOCKS_PASSWORD)) {
-			proxy = proxy.password(u -> properties.getProperty(SOCKS_PASSWORD));
+			proxy.password(properties.getProperty(SOCKS_PASSWORD));
 		}
 
 		return proxy.build();
@@ -375,10 +398,11 @@ public final class ProxyProvider {
 		static final Predicate<SocketAddress> ALWAYS_PROXY = a -> false;
 
 		String username;
-		Function<? super String, ? extends String> password;
+		String password;
+		Function<? super String, ? extends String> passwordFunction;
 		String host;
 		int port;
-		Supplier<? extends InetSocketAddress> address;
+		Supplier<? extends SocketAddress> address;
 		Predicate<SocketAddress> nonProxyHostPredicate = ALWAYS_PROXY;
 		Supplier<? extends HttpHeaders> httpHeaders = NO_HTTP_HEADERS;
 		Proxy type;
@@ -394,8 +418,15 @@ public final class ProxyProvider {
 		}
 
 		@Override
-		public final Builder password(Function<? super String, ? extends String> password) {
+		public final Builder password(Function<? super String, ? extends String> passwordFunction) {
+			this.password = null;
+			this.passwordFunction = passwordFunction;
+			return this;
+		}
+
+		final Builder password(String password) {
 			this.password = password;
+			this.passwordFunction = null;
 			return this;
 		}
 
@@ -406,20 +437,37 @@ public final class ProxyProvider {
 		}
 
 		@Override
+		public final Builder address(InetSocketAddress address) {
+			return socketAddress(address);
+		}
+
+		@Override
 		public final Builder port(int port) {
 			this.port = port;
 			return this;
 		}
 
 		@Override
-		public final Builder address(InetSocketAddress address) {
+		public final Builder socketAddress(SocketAddress address) {
 			Objects.requireNonNull(address, "address");
-			this.address = () -> AddressUtils.replaceWithResolved(address);
+			this.address = () -> {
+				if (address instanceof InetSocketAddress) {
+					return AddressUtils.replaceWithResolved((InetSocketAddress) address);
+				}
+				else {
+					return address;
+				}
+			};
 			return this;
 		}
 
 		@Override
 		public final Builder address(Supplier<? extends InetSocketAddress> addressSupplier) {
+			return socketAddress(addressSupplier);
+		}
+
+		@Override
+		public final Builder socketAddress(Supplier<? extends SocketAddress> addressSupplier) {
 			this.address = Objects.requireNonNull(addressSupplier, "addressSupplier");
 			return this;
 		}
@@ -476,7 +524,7 @@ public final class ProxyProvider {
 
 		/**
 		 * Creates a {@link RegexShouldProxyPredicate} based off the provided pattern with possible wildcards as
-		 * described in https://docs.oracle.com/javase/7/docs/api/java/net/doc-files/net-properties.html
+		 * described in https://docs.oracle.com/javase/7/docs/api/java/net/doc-files/net-properties.html.
 		 *
 		 * @param pattern The string wildcarded expression
 		 * @return a predicate whether we should direct to proxy
@@ -576,8 +624,32 @@ public final class ProxyProvider {
 		 *
 		 * @param address The address to connect to.
 		 * @return {@code this}
+		 * @deprecated as of 1.2.0. Prefer using {@link #socketAddress(SocketAddress)}.
+		 * This method will be removed in 1.3.0.
 		 */
+		@Deprecated
 		Builder address(InetSocketAddress address);
+
+		/**
+		 * The address to connect to.
+		 *
+		 * @param address The address to connect to.
+		 * @return {@code this}
+		 */
+		default Builder socketAddress(SocketAddress address) {
+			throw new UnsupportedOperationException();
+		}
+
+		/**
+		 * The supplier for the address to connect to.
+		 *
+		 * @param addressSupplier The supplier for the address to connect to.
+		 * @return {@code this}
+		 * @deprecated as of 1.2.0. Prefer using {@link #socketAddress(SocketAddress)}.
+		 * This method will be removed in 1.3.0.
+		 */
+		@Deprecated
+		Builder address(Supplier<? extends InetSocketAddress> addressSupplier);
 
 		/**
 		 * The supplier for the address to connect to.
@@ -585,7 +657,9 @@ public final class ProxyProvider {
 		 * @param addressSupplier The supplier for the address to connect to.
 		 * @return {@code this}
 		 */
-		Builder address(Supplier<? extends InetSocketAddress> addressSupplier);
+		default Builder socketAddress(Supplier<? extends SocketAddress> addressSupplier) {
+			throw new UnsupportedOperationException();
+		}
 	}
 
 	public interface Builder {
@@ -653,7 +727,7 @@ public final class ProxyProvider {
 		Builder connectTimeoutMillis(long connectTimeoutMillis);
 
 		/**
-		 * Builds new ProxyProvider
+		 * Builds new ProxyProvider.
 		 *
 		 * @return builds new ProxyProvider
 		 */

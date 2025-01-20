@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2021 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2023 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -43,7 +43,7 @@ import static reactor.netty.http.brave.ReactorNettyHttpTracing.SPAN_ATTR_KEY;
 
 /**
  * This class is based on
- * https://github.com/spring-cloud/spring-cloud-sleuth/blob/d969aa7b549e9c82729e16dc7d846654e32ddef9/spring-cloud-sleuth-core/src/main/java/org/springframework/cloud/sleuth/instrument/web/client/HttpClientBeanPostProcessor.java
+ * https://github.com/spring-cloud/spring-cloud-sleuth/blob/d969aa7b549e9c82729e16dc7d846654e32ddef9/spring-cloud-sleuth-core/src/main/java/org/springframework/cloud/sleuth/instrument/web/client/HttpClientBeanPostProcessor.java.
  */
 final class TracingHttpClientDecorator {
 
@@ -79,7 +79,7 @@ final class TracingHttpClientDecorator {
 		}
 	}
 
-	static abstract class AbstractTracingDoOnHandler {
+	abstract static class AbstractTracingDoOnHandler {
 
 		final HttpClientHandler<HttpClientRequest, HttpClientResponse> handler;
 

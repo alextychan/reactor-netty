@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2021 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2024 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,6 +15,8 @@
  */
 package reactor.netty.http.server;
 
+import java.util.ArrayList;
+import java.util.StringTokenizer;
 import java.util.function.BiFunction;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -22,7 +24,11 @@ import java.util.regex.Pattern;
 import io.netty.handler.codec.http.HttpRequest;
 import reactor.netty.transport.AddressUtils;
 
+import static reactor.netty.http.server.ConnectionInfo.getDefaultHostPort;
+
 /**
+ * Default implementation for handling {@code X-Forwarded}/{@code Forwarded} headers.
+ *
  * @author Andrey Shlykov
  * @since 0.9.12
  */
@@ -35,10 +41,13 @@ final class DefaultHttpForwardedHeaderHandler implements BiFunction<ConnectionIn
 	static final String  X_FORWARDED_HOST_HEADER  = "X-Forwarded-Host";
 	static final String  X_FORWARDED_PORT_HEADER  = "X-Forwarded-Port";
 	static final String  X_FORWARDED_PROTO_HEADER = "X-Forwarded-Proto";
+	static final String  X_FORWARDED_PREFIX_HEADER = "X-Forwarded-Prefix";
 
 	static final Pattern FORWARDED_HOST_PATTERN   = Pattern.compile("host=\"?([^;,\"]+)\"?");
 	static final Pattern FORWARDED_PROTO_PATTERN  = Pattern.compile("proto=\"?([^;,\"]+)\"?");
 	static final Pattern FORWARDED_FOR_PATTERN    = Pattern.compile("for=\"?([^;,\"]+)\"?");
+
+	private static final String[] EMPTY_STRING_ARRAY = {};
 
 	/**
 	 * Specifies whether the Http Server applies a strict {@code Forwarded} header validation.
@@ -62,15 +71,15 @@ final class DefaultHttpForwardedHeaderHandler implements BiFunction<ConnectionIn
 
 	private ConnectionInfo parseForwardedInfo(ConnectionInfo connectionInfo, String forwardedHeader) {
 		String forwarded = forwardedHeader.split(",", 2)[0];
-		Matcher hostMatcher = FORWARDED_HOST_PATTERN.matcher(forwarded);
-		if (hostMatcher.find()) {
-			connectionInfo = connectionInfo.withHostAddress(
-					AddressUtils.parseAddress(hostMatcher.group(1), connectionInfo.getHostAddress().getPort(),
-							DEFAULT_FORWARDED_HEADER_VALIDATION));
-		}
 		Matcher protoMatcher = FORWARDED_PROTO_PATTERN.matcher(forwarded);
 		if (protoMatcher.find()) {
 			connectionInfo = connectionInfo.withScheme(protoMatcher.group(1).trim());
+		}
+		Matcher hostMatcher = FORWARDED_HOST_PATTERN.matcher(forwarded);
+		if (hostMatcher.find()) {
+			connectionInfo = connectionInfo.withHostAddress(
+					AddressUtils.parseAddress(hostMatcher.group(1),
+							getDefaultHostPort(connectionInfo.getScheme()), DEFAULT_FORWARDED_HEADER_VALIDATION));
 		}
 		Matcher forMatcher = FORWARDED_FOR_PATTERN.matcher(forwarded);
 		if (forMatcher.find()) {
@@ -87,27 +96,64 @@ final class DefaultHttpForwardedHeaderHandler implements BiFunction<ConnectionIn
 			connectionInfo = connectionInfo.withRemoteAddress(
 					AddressUtils.parseAddress(ipHeader.split(",", 2)[0], connectionInfo.getRemoteAddress().getPort()));
 		}
-		String hostHeader = request.headers().get(X_FORWARDED_HOST_HEADER);
-		if (hostHeader != null) {
-			String portHeader = request.headers().get(X_FORWARDED_PORT_HEADER);
-			int port = connectionInfo.getHostAddress().getPort();
-			if (portHeader != null && !portHeader.isEmpty()) {
-				String portStr = portHeader.split(",", 2)[0].trim();
-				if (portStr.chars().allMatch(Character::isDigit)) {
-					port = Integer.parseInt(portStr);
-				}
-				else if (DEFAULT_FORWARDED_HEADER_VALIDATION) {
-					throw new IllegalArgumentException("Failed to parse a port from " + portHeader);
-				}
-			}
-			connectionInfo = connectionInfo.withHostAddress(
-					AddressUtils.createUnresolved(hostHeader.split(",", 2)[0].trim(), port));
-		}
 		String protoHeader = request.headers().get(X_FORWARDED_PROTO_HEADER);
 		if (protoHeader != null) {
 			connectionInfo = connectionInfo.withScheme(protoHeader.split(",", 2)[0].trim());
 		}
+		String hostHeader = request.headers().get(X_FORWARDED_HOST_HEADER);
+		if (hostHeader != null) {
+			connectionInfo = connectionInfo.withHostAddress(
+					AddressUtils.parseAddress(hostHeader.split(",", 2)[0].trim(),
+							getDefaultHostPort(connectionInfo.getScheme()), DEFAULT_FORWARDED_HEADER_VALIDATION));
+		}
+
+		String portHeader = request.headers().get(X_FORWARDED_PORT_HEADER);
+		if (portHeader != null && !portHeader.isEmpty()) {
+			String portStr = portHeader.split(",", 2)[0].trim();
+			if (portStr.chars().allMatch(Character::isDigit)) {
+				int port = Integer.parseInt(portStr);
+				connectionInfo = connectionInfo.withHostAddress(
+						AddressUtils.createUnresolved(connectionInfo.getHostAddress().getHostString(), port),
+						connectionInfo.getHostName(), port);
+			}
+			else if (DEFAULT_FORWARDED_HEADER_VALIDATION) {
+				throw new IllegalArgumentException("Failed to parse a port from " + portHeader);
+			}
+		}
+
+		String prefixHeader = request.headers().get(X_FORWARDED_PREFIX_HEADER);
+		if (prefixHeader != null) {
+			connectionInfo = connectionInfo.withForwardedPrefix(parseForwardedPrefix(prefixHeader));
+		}
 		return connectionInfo;
 	}
 
+	private static String parseForwardedPrefix(String prefixHeader) {
+		StringBuilder prefix = new StringBuilder(prefixHeader.length());
+		String[] rawPrefixes = tokenizeToStringArray(prefixHeader);
+		for (String rawPrefix : rawPrefixes) {
+			int endIndex = rawPrefix.length();
+			while (endIndex > 1 && rawPrefix.charAt(endIndex - 1) == '/') {
+				endIndex--;
+			}
+			prefix.append((endIndex != rawPrefix.length() ? rawPrefix.substring(0, endIndex) : rawPrefix));
+		}
+		String parsedPrefix = prefix.toString();
+		if (!parsedPrefix.isEmpty() && DEFAULT_FORWARDED_HEADER_VALIDATION && parsedPrefix.charAt(0) != '/') {
+			throw new IllegalArgumentException("X-Forwarded-Prefix did not start with a slash (\"/\"): " + prefixHeader);
+		}
+		return parsedPrefix;
+	}
+
+	private static String[] tokenizeToStringArray(String str) {
+		StringTokenizer st = new StringTokenizer(str, ",");
+		ArrayList<String> tokens = new ArrayList<>();
+		while (st.hasMoreTokens()) {
+			String token = st.nextToken().trim();
+			if (!token.isEmpty()) {
+				tokens.add(token);
+			}
+		}
+		return !tokens.isEmpty() ? tokens.toArray(EMPTY_STRING_ARRAY) : EMPTY_STRING_ARRAY;
+	}
 }

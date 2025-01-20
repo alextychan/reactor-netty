@@ -1,0 +1,55 @@
+:formattersourcedir: {core}/src/main/java
+
+=== Wire Logger
+
+Reactor Netty provides wire logging for when the traffic between the peers needs to be inspected.
+By default, wire logging is disabled.
+To enable it, you must set the logger `{wirelogger}` level to `DEBUG`
+and apply the following configuration:
+
+{examples-link}/wiretap/Application.java
+[%unbreakable]
+----
+include::{examples-dir}/wiretap/Application.java[lines=18..35]
+----
+<1> Enables the wire logging
+
+[[wire-logger-formatters]]
+==== Wire Logger formatters
+Reactor Netty supports 3 different formatters:
+
+- {javadoc}/reactor/netty/transport/logging/AdvancedByteBufFormat.html#HEX_DUMP[AdvancedByteBufFormat#HEX_DUMP] - the default
+
+{core-source-link}/reactor/netty/transport/logging/AdvancedByteBufFormat.java
+[%unbreakable]
+----
+include::{formattersourcedir}/reactor/netty/transport/logging/AdvancedByteBufFormat.java[lines=47..75]
+----
+
+- {javadoc}/reactor/netty/transport/logging/AdvancedByteBufFormat.html#SIMPLE[AdvancedByteBufFormat#SIMPLE]
+
+{core-source-link}/reactor/netty/transport/logging/AdvancedByteBufFormat.java
+[%unbreakable]
+----
+include::{formattersourcedir}/reactor/netty/transport/logging/AdvancedByteBufFormat.java[lines=34..45]
+----
+
+- {javadoc}/reactor/netty/transport/logging/AdvancedByteBufFormat.html#TEXTUAL[AdvancedByteBufFormat#TEXTUAL]
+
+{core-source-link}/reactor/netty/transport/logging/AdvancedByteBufFormat.java
+[%unbreakable]
+----
+include::{formattersourcedir}/reactor/netty/transport/logging/AdvancedByteBufFormat.java[lines=77..93]
+----
+
+
+When you need to change the default formatter you can configure it as follows:
+
+{examples-link}/wiretap/custom/Application.java
+[%unbreakable]
+----
+include::{examples-dir}/wiretap/custom/Application.java[lines=18..38]
+----
+<1> Enables the wire logging,
+{javadoc}/reactor/netty/transport/logging/AdvancedByteBufFormat.html#TEXTUAL[AdvancedByteBufFormat#TEXTUAL] is used for
+printing the content.

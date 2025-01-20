@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2023 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2011-2024 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,7 +20,9 @@ import java.net.URI;
 import java.net.URISyntaxException;
 import java.nio.channels.ClosedChannelException;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -38,6 +40,8 @@ import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.socket.SocketChannel;
+import io.netty.handler.codec.compression.ZlibCodecFactory;
 import io.netty.handler.codec.http.DefaultFullHttpRequest;
 import io.netty.handler.codec.http.DefaultHttpRequest;
 import io.netty.handler.codec.http.FullHttpResponse;
@@ -59,7 +63,10 @@ import io.netty.handler.codec.http.cookie.Cookie;
 import io.netty.handler.codec.http.multipart.DefaultHttpDataFactory;
 import io.netty.handler.codec.http.multipart.HttpDataFactory;
 import io.netty.handler.codec.http.multipart.HttpPostRequestEncoder;
-import io.netty.handler.codec.http.websocketx.extensions.compression.WebSocketClientCompressionHandler;
+import io.netty.handler.codec.http.websocketx.extensions.WebSocketClientExtensionHandler;
+import io.netty.handler.codec.http.websocketx.extensions.compression.DeflateFrameClientExtensionHandshaker;
+import io.netty.handler.codec.http.websocketx.extensions.compression.PerMessageDeflateClientExtensionHandshaker;
+import io.netty.handler.codec.http2.Http2StreamChannel;
 import io.netty.handler.stream.ChunkedWriteHandler;
 import io.netty.handler.timeout.ReadTimeoutHandler;
 import io.netty.util.ReferenceCountUtil;
@@ -89,9 +96,12 @@ import reactor.util.Loggers;
 import reactor.util.annotation.Nullable;
 import reactor.util.context.ContextView;
 
+import static io.netty.handler.codec.http.websocketx.extensions.compression.PerMessageDeflateServerExtensionHandshaker.MAX_WINDOW_SIZE;
 import static reactor.netty.ReactorNetty.format;
 
 /**
+ * Conversion between Netty types and Reactor types ({@link HttpOperations}.
+ *
  * @author Stephane Maldini
  * @author Simon Baslé
  */
@@ -103,7 +113,9 @@ class HttpClientOperations extends HttpOperations<NettyInbound, NettyOutbound>
 	final HttpHeaders            requestHeaders;
 	final ClientCookieEncoder    cookieEncoder;
 	final ClientCookieDecoder    cookieDecoder;
+	final List<Cookie>           cookieList;
 	final Sinks.One<HttpHeaders> trailerHeaders;
+	final HttpVersion            version;
 
 	Supplier<String>[]          redirectedFrom = EMPTY_REDIRECTIONS;
 	String                      resourceUrl;
@@ -121,8 +133,9 @@ class HttpClientOperations extends HttpOperations<NettyInbound, NettyOutbound>
 	Consumer<HttpClientRequest> redirectRequestConsumer;
 	HttpHeaders previousRequestHeaders;
 	BiConsumer<HttpHeaders, HttpClientRequest> redirectRequestBiConsumer;
+	volatile Throwable unprocessedOutboundError;
 
-	final static String INBOUND_CANCEL_LOG = "Http client inbound receiver cancelled, closing channel.";
+	static final String INBOUND_CANCEL_LOG = "Http client inbound receiver cancelled, closing channel.";
 
 	HttpClientOperations(HttpClientOperations replaced) {
 		super(replaced);
@@ -140,11 +153,17 @@ class HttpClientOperations extends HttpOperations<NettyInbound, NettyOutbound>
 		this.requestHeaders = replaced.requestHeaders;
 		this.cookieEncoder = replaced.cookieEncoder;
 		this.cookieDecoder = replaced.cookieDecoder;
+		this.cookieList = replaced.cookieList;
 		this.resourceUrl = replaced.resourceUrl;
 		this.path = replaced.path;
 		this.responseTimeout = replaced.responseTimeout;
 		this.is100Continue = replaced.is100Continue;
 		this.trailerHeaders = replaced.trailerHeaders;
+		this.version = replaced.version;
+		// No need to copy the unprocessedOutboundError field from the replaced instance. The reason for this is that the
+		// "unprocessedOutboundError" field contains an error that occurs when the connection of the HttpClientOperations
+		// is already closed. In essence, this error represents the final state for the HttpClientOperations, and there's
+		// no need to carry it over because it's considered as a terminal/concluding state.
 	}
 
 	HttpClientOperations(Connection c, ConnectionObserver listener, ClientCookieEncoder encoder,
@@ -157,14 +176,32 @@ class HttpClientOperations extends HttpOperations<NettyInbound, NettyOutbound>
 		this.requestHeaders = nettyRequest.headers();
 		this.cookieDecoder = decoder;
 		this.cookieEncoder = encoder;
+		this.cookieList = new ArrayList<>();
+		if (c.channel() instanceof Http2StreamChannel) {
+			this.version = H2;
+		}
+		else if (c.channel() instanceof SocketChannel) {
+			HttpVersion version = this.nettyRequest.protocolVersion();
+			if (version.equals(HttpVersion.HTTP_1_0)) {
+				this.version = HttpVersion.HTTP_1_0;
+			}
+			else if (version.equals(HttpVersion.HTTP_1_1)) {
+				this.version = HttpVersion.HTTP_1_1;
+			}
+			else {
+				throw new IllegalStateException(version.protocolName() + " not supported");
+			}
+		}
+		else {
+			this.version = H3;
+		}
 		this.trailerHeaders = Sinks.unsafe().one();
 	}
 
 	@Override
 	public HttpClientRequest addCookie(Cookie cookie) {
 		if (!hasSentHeaders()) {
-			this.requestHeaders.add(HttpHeaderNames.COOKIE,
-					cookieEncoder.encode(cookie));
+			this.cookieList.add(cookie);
 		}
 		else {
 			throw new IllegalStateException("Status and headers already sent");
@@ -284,6 +321,11 @@ class HttpClientOperations extends HttpOperations<NettyInbound, NettyOutbound>
 	}
 
 	@Override
+	protected final void onUnprocessedOutboundError(Throwable t) {
+		this.unprocessedOutboundError = t;
+	}
+
+	@Override
 	protected void onInboundClose() {
 		if (isInboundCancelled() || isInboundDisposed()) {
 			listener().onStateChange(this, ConnectionObserver.State.DISCONNECTING);
@@ -291,18 +333,21 @@ class HttpClientOperations extends HttpOperations<NettyInbound, NettyOutbound>
 		}
 		listener().onStateChange(this, HttpClientState.RESPONSE_INCOMPLETE);
 		if (responseState == null) {
+			Throwable exception;
 			if (markSentHeaderAndBody()) {
-				listener().onUncaughtException(this, AbortedException.beforeSend());
+				exception = AbortedException.beforeSend();
 			}
 			else if (markSentBody()) {
-				listener().onUncaughtException(this, new PrematureCloseException("Connection has been closed BEFORE response, while sending request body"));
+				exception = new PrematureCloseException("Connection has been closed BEFORE response, while sending request body");
 			}
 			else {
-				listener().onUncaughtException(this, new PrematureCloseException("Connection prematurely closed BEFORE response"));
+				exception = new PrematureCloseException("Connection prematurely closed BEFORE response");
 			}
+			listener().onUncaughtException(this, addOutboundErrorCause(exception, unprocessedOutboundError));
 			return;
 		}
-		super.onInboundError(new PrematureCloseException("Connection prematurely closed DURING response"));
+		super.onInboundError(addOutboundErrorCause(new PrematureCloseException("Connection prematurely closed DURING response"),
+				unprocessedOutboundError));
 	}
 
 	@Override
@@ -418,7 +463,9 @@ class HttpClientOperations extends HttpOperations<NettyInbound, NettyOutbound>
 		if (source instanceof Mono) {
 			return super.send(source);
 		}
-		if (Objects.equals(method(), HttpMethod.GET) || Objects.equals(method(), HttpMethod.HEAD)) {
+		if (Objects.equals(method(), HttpMethod.GET) ||
+				Objects.equals(method(), HttpMethod.HEAD) ||
+				Objects.equals(method(), HttpMethod.DELETE)) {
 
 			ByteBufAllocator alloc = channel().alloc();
 			return new PostHeadersNettyOutbound(Flux.from(source)
@@ -453,7 +500,7 @@ class HttpClientOperations extends HttpOperations<NettyInbound, NettyOutbound>
 				                }
 				                for (ByteBuf bb : list) {
 				                	if (log.isDebugEnabled()) {
-						                log.debug(format(channel(), "Ignoring accumulated bytebuf on http GET {}"), bb);
+						                log.debug(format(channel(), "Ignoring accumulated bytebuf on http {} {}"), method(), bb);
 					                }
 				                	bb.release();
 				                }
@@ -504,7 +551,10 @@ class HttpClientOperations extends HttpOperations<NettyInbound, NettyOutbound>
 
 	@Override
 	public final String fullPath() {
-		return this.path;
+		if (path == null) {
+			path = resolvePath(uri());
+		}
+		return path;
 	}
 
 	@Override
@@ -514,14 +564,47 @@ class HttpClientOperations extends HttpOperations<NettyInbound, NettyOutbound>
 
 	@Override
 	public final HttpVersion version() {
-		HttpVersion version = this.nettyRequest.protocolVersion();
-		if (version.equals(HttpVersion.HTTP_1_0)) {
-			return HttpVersion.HTTP_1_0;
+		return version;
+	}
+
+	/**
+	 * React on channel unwritability event while the http client request is being written.
+	 *
+	 * <p>When using plain HTTP/1.1 and {@code HttpClient.send(Mono<ByteBuf>)}, if the socket becomes unwritable while writing,
+	 * we need to request for reads. This is necessary to read any early server response, such as a 400 bad request followed
+	 * by a socket close, while the request is still being written. Else, a "premature close exception before response" may be reported
+	 * to the user, causing confusion about the server's early response.
+	 *
+	 * <p>There is no need to request for reading in other cases
+	 * (H2/H2C/H1S/WebSocket), because in these cases the read interest has already been requested, or auto-read is enabled
+	 *
+	 * <p>Important notes:
+	 * <p>
+	 * - If the connection is unwritable and {@code send(Flux<ByteBuf>)} has been used, then {@code hasSentBody()} will
+	 * always return false, because when {@code send(Flux<ByteBuf>)} is used, {@code hasSentBody()} can only return true
+	 * if the request is fully written (see {@link #onOutboundComplete()} method which invokes {@code markSentBody()}
+	 * and sets the state to BODY_SENT).
+	 * So if channel is unwritable and {@code hasSentBody()} returns true, it means that {@code send(Mono<ByteBuf>)} has
+	 * been used (see {@link HttpOperations#send(Publisher)} where {@code markSentHeaderAndBody(b)} is setting
+	 * the state to BODY_SENT when the Publisher is a Mono).
+	 *
+	 * <p>- When the channel is unwritable, a channel read() has already been requested or is in auto-read if:
+	 * <ul><li> Secure mode is used (Netty SslHandler requests read() when flushing).</li>
+	 * <li>HTTP2 is used.</li>
+	 * <li>WebSocket is used.</li>
+	 * </ul>
+	 *
+	 * <p>See GH-2825 for more info
+	 */
+	@Override
+	protected void onWritabilityChanged() {
+		if (!isSecure &&
+				!channel().isWritable() && !channel().config().isAutoRead() &&
+				hasSentBody() &&
+				!(channel() instanceof Http2StreamChannel) &&
+				!isWebsocket()) {
+			channel().read();
 		}
-		else if (version.equals(HttpVersion.HTTP_1_1)) {
-			return HttpVersion.HTTP_1_1;
-		}
-		throw new IllegalStateException(version.protocolName() + " not supported");
 	}
 
 	@Override
@@ -539,6 +622,10 @@ class HttpClientOperations extends HttpOperations<NettyInbound, NettyOutbound>
 				redirectRequestBiConsumer.accept(previousRequestHeaders, this);
 				previousRequestHeaders = null;
 			}
+		}
+
+		if (!cookieList.isEmpty()) {
+			requestHeaders.add(HttpHeaderNames.COOKIE, cookieEncoder.encode(cookieList));
 		}
 	}
 
@@ -575,8 +662,19 @@ class HttpClientOperations extends HttpOperations<NettyInbound, NettyOutbound>
 		}
 		listener().onStateChange(this, HttpClientState.REQUEST_SENT);
 		if (responseTimeout != null) {
-			addHandlerFirst(NettyPipeline.ResponseTimeoutHandler,
-					new ReadTimeoutHandler(responseTimeout.toMillis(), TimeUnit.MILLISECONDS));
+			if (channel().pipeline().get(NettyPipeline.HttpMetricsHandler) != null) {
+				if (channel().pipeline().get(NettyPipeline.ResponseTimeoutHandler) == null) {
+					channel().pipeline().addBefore(NettyPipeline.HttpMetricsHandler, NettyPipeline.ResponseTimeoutHandler,
+							new ReadTimeoutHandler(responseTimeout.toMillis(), TimeUnit.MILLISECONDS));
+					if (isPersistent()) {
+						onTerminate().subscribe(null, null, () -> removeHandler(NettyPipeline.ResponseTimeoutHandler));
+					}
+				}
+			}
+			else {
+				addHandlerFirst(NettyPipeline.ResponseTimeoutHandler,
+						new ReadTimeoutHandler(responseTimeout.toMillis(), TimeUnit.MILLISECONDS));
+			}
 		}
 		channel().read();
 		if (channel().parent() != null) {
@@ -604,11 +702,10 @@ class HttpClientOperations extends HttpOperations<NettyInbound, NettyOutbound>
 	protected void onInboundNext(ChannelHandlerContext ctx, Object msg) {
 		if (msg instanceof HttpResponse) {
 			HttpResponse response = (HttpResponse) msg;
-			if (response.decoderResult()
-			            .isFailure()) {
-				onInboundError(response.decoderResult()
-				                       .cause());
+			if (response.decoderResult().isFailure()) {
+				onInboundError(response.decoderResult().cause());
 				ReferenceCountUtil.release(msg);
+				terminate();
 				return;
 			}
 			if (HttpResponseStatus.CONTINUE.equals(response.status())) {
@@ -671,8 +768,16 @@ class HttpClientOperations extends HttpOperations<NettyInbound, NettyOutbound>
 		}
 
 		if (msg instanceof LastHttpContent) {
+			LastHttpContent lastHttpContent = (LastHttpContent) msg;
+			if (lastHttpContent.decoderResult().isFailure()) {
+				onInboundError(lastHttpContent.decoderResult().cause());
+				lastHttpContent.release();
+				terminate();
+				return;
+			}
+
 			if (is100Continue) {
-				ReferenceCountUtil.release(msg);
+				lastHttpContent.release();
 				channel().read();
 				return;
 			}
@@ -681,18 +786,20 @@ class HttpClientOperations extends HttpOperations<NettyInbound, NettyOutbound>
 					log.debug(format(channel(), "HttpClientOperations received an incorrect end " +
 							"delimiter (previously used connection?)"));
 				}
-				ReferenceCountUtil.release(msg);
+				lastHttpContent.release();
 				return;
 			}
 			if (log.isDebugEnabled()) {
 				log.debug(format(channel(), "Received last HTTP packet"));
 			}
-			if (msg != LastHttpContent.EMPTY_LAST_CONTENT) {
-				if (redirecting != null) {
-					ReferenceCountUtil.release(msg);
+			if (lastHttpContent != LastHttpContent.EMPTY_LAST_CONTENT) {
+				// When there is HTTP/2 response with INBOUND HEADERS(endStream=false) followed by INBOUND DATA(endStream=true length=0),
+				// Netty sends LastHttpContent with empty buffer instead of EMPTY_LAST_CONTENT
+				if (redirecting != null || lastHttpContent.content().readableBytes() == 0) {
+					lastHttpContent.release();
 				}
 				else {
-					super.onInboundNext(ctx, msg);
+					super.onInboundNext(ctx, lastHttpContent);
 				}
 			}
 
@@ -701,7 +808,7 @@ class HttpClientOperations extends HttpOperations<NettyInbound, NettyOutbound>
 				// Whether there are subscribers or the subscriber cancels is not of interest
 				// Evaluated EmitResult: FAIL_TERMINATED, FAIL_OVERFLOW, FAIL_CANCELLED, FAIL_NON_SERIALIZED
 				// FAIL_ZERO_SUBSCRIBER
-				trailerHeaders.tryEmitValue(((LastHttpContent) msg).trailingHeaders());
+				trailerHeaders.tryEmitValue(lastHttpContent.trailingHeaders());
 			}
 
 			//force auto read to enable more accurate close selection now inbound is done
@@ -814,7 +921,15 @@ class HttpClientOperations extends HttpOperations<NettyInbound, NettyOutbound>
 				// Returned value is deliberately ignored
 				removeHandler(NettyPipeline.HttpDecompressor);
 				// Returned value is deliberately ignored
-				addHandlerFirst(NettyPipeline.WsCompressionHandler, WebSocketClientCompressionHandler.INSTANCE);
+				PerMessageDeflateClientExtensionHandshaker perMessageDeflateClientExtensionHandshaker =
+						new PerMessageDeflateClientExtensionHandshaker(6, ZlibCodecFactory.isSupportingWindowSizeAndMemLevel(),
+								MAX_WINDOW_SIZE, websocketClientSpec.compressionAllowClientNoContext(),
+								websocketClientSpec.compressionRequestedServerNoContext());
+				addHandlerFirst(NettyPipeline.WsCompressionHandler,
+						new WebSocketClientExtensionHandler(
+								perMessageDeflateClientExtensionHandshaker,
+								new DeflateFrameClientExtensionHandshaker(false),
+								new DeflateFrameClientExtensionHandshaker(true)));
 			}
 
 			if (log.isDebugEnabled()) {
@@ -827,6 +942,14 @@ class HttpClientOperations extends HttpOperations<NettyInbound, NettyOutbound>
 						get(channel()) + " to " + ops));
 			}
 		}
+	}
+
+	static Throwable addOutboundErrorCause(Throwable exception, @Nullable Throwable cause) {
+		if (cause != null) {
+			cause.setStackTrace(new StackTraceElement[0]);
+			exception.initCause(cause);
+		}
+		return exception;
 	}
 
 	static final class ResponseState {
@@ -961,6 +1084,8 @@ class HttpClientOperations extends HttpOperations<NettyInbound, NettyOutbound>
 		}
 	}
 
+	static final HttpVersion            H2 = HttpVersion.valueOf("HTTP/2.0");
+	static final HttpVersion            H3 = HttpVersion.valueOf("HTTP/3.0");
 	static final int                    MAX_REDIRECTS      = 50;
 	@SuppressWarnings({"unchecked", "rawtypes"})
 	static final Supplier<String>[]     EMPTY_REDIRECTIONS = (Supplier<String>[]) new Supplier[0];

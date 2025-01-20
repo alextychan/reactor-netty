@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2022 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2011-2024 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@
  */
 package reactor.netty.http.client;
 
+import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.net.URI;
 import java.time.Duration;
@@ -29,6 +30,7 @@ import java.util.function.Supplier;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.handler.codec.DecoderException;
+import io.netty.handler.codec.compression.Brotli;
 import io.netty.handler.codec.http.HttpHeaderNames;
 import io.netty.handler.codec.http.HttpHeaderValues;
 import io.netty.handler.codec.http.HttpHeaders;
@@ -53,6 +55,7 @@ import reactor.netty.ConnectionObserver;
 import reactor.netty.NettyOutbound;
 import reactor.netty.channel.ChannelMetricsRecorder;
 import reactor.netty.http.Http2SettingsSpec;
+import reactor.netty.http.Http3SettingsSpec;
 import reactor.netty.http.HttpProtocol;
 import reactor.netty.http.logging.HttpMessageLogFactory;
 import reactor.netty.http.logging.ReactorNettyHttpMessageLogFactory;
@@ -65,7 +68,11 @@ import reactor.netty.tcp.TcpClient;
 import reactor.netty.transport.ClientTransport;
 import reactor.util.Logger;
 import reactor.util.Loggers;
+import reactor.util.annotation.Incubating;
 import reactor.util.annotation.Nullable;
+
+import static reactor.netty.http.client.HttpClientConfig.h3;
+import static reactor.netty.http.internal.Http3.isHttp3Available;
 
 /**
  * An HttpClient allows building in a safe immutable way an http client that is
@@ -109,12 +116,12 @@ public abstract class HttpClient extends ClientTransport<HttpClient, HttpClientC
 	public static final String USER_AGENT = String.format("ReactorNetty/%s", reactorNettyVersion());
 
 	/**
-	 * A URI configuration
+	 * A URI configuration.
 	 */
 	public interface UriConfiguration<S extends UriConfiguration<?>> {
 
 		/**
-		 * Configure URI to use for this request/response
+		 * Configure URI to use for this request/response.
 		 *
 		 * @param uri target URI, if starting with "/" it will be prepended with
 		 * {@link #baseUrl(String)} when available
@@ -124,7 +131,7 @@ public abstract class HttpClient extends ClientTransport<HttpClient, HttpClientC
 		S uri(String uri);
 
 		/**
-		 * Configure URI to use for this request/response on subscribe
+		 * Configure URI to use for this request/response on subscribe.
 		 *
 		 * @param uri target URI, if starting with "/" it will be prepended with
 		 * {@link #baseUrl(String)} when available
@@ -183,7 +190,7 @@ public abstract class HttpClient extends ClientTransport<HttpClient, HttpClientC
 		 *
 		 * @param sender a bifunction given the outgoing request and the sending
 		 * {@link NettyOutbound}, returns a publisher that will terminate the request
-		 * body on complete
+		 * body on complete. Return {@link Mono#empty()} in case of a request without body.
 		 *
 		 * @return a new {@link ResponseReceiver}
 		 */
@@ -509,30 +516,46 @@ public abstract class HttpClient extends ClientTransport<HttpClient, HttpClientC
 	}
 
 	/**
-	 * Specifies whether GZip compression is enabled.
+	 * Specifies whether compression (gzip, Brotli, and zstd) is enabled.
 	 *
-	 * @param compressionEnabled if true GZip compression is enabled otherwise disabled (default: false)
+	 * <p>Note: Brotli and zstd compressions require additional dependencies.
+	 *
+	 * <p>Note: For zstd compression, {@literal Accept-Encoding: zstd} header needs to be added explicitly.
+	 *
+	 * @param compressionEnabled if true, compression (gzip, Brotli, and zstd) is enabled, otherwise disabled (default: false)
 	 * @return a new {@link HttpClient}
 	 */
 	public final HttpClient compress(boolean compressionEnabled) {
 		if (compressionEnabled) {
+			// Enabling the compression means at least "acceptGzip" is enabled.
+			// So we can use "acceptGzip" as a flag for the compression.
 			if (!configuration().acceptGzip) {
 				HttpClient dup = duplicate();
+				HttpClientConfig config = dup.configuration();
 				HttpHeaders headers = configuration().headers.copy();
 				headers.add(HttpHeaderNames.ACCEPT_ENCODING, HttpHeaderValues.GZIP);
-				dup.configuration().headers = headers;
-				dup.configuration().acceptGzip = true;
+				config.acceptGzip = true;
+
+				if (Brotli.isAvailable()) {
+					headers.add(HttpHeaderNames.ACCEPT_ENCODING, HttpHeaderValues.BR);
+					config.acceptBrotli = true;
+				}
+
+				config.headers = headers;
+
 				return dup;
 			}
 		}
 		else if (configuration().acceptGzip) {
 			HttpClient dup = duplicate();
+			HttpClientConfig config = dup.configuration();
 			if (isCompressing(configuration().headers)) {
 				HttpHeaders headers = configuration().headers.copy();
 				headers.remove(HttpHeaderNames.ACCEPT_ENCODING);
-				dup.configuration().headers = headers;
+				config.headers = headers;
 			}
-			dup.configuration().acceptGzip = false;
+			config.acceptGzip = false;
+			config.acceptBrotli = false;
 			return dup;
 		}
 		return this;
@@ -577,7 +600,7 @@ public abstract class HttpClient extends ClientTransport<HttpClient, HttpClientC
 	/**
 	 * Configure the
 	 * {@link ClientCookieEncoder}, {@link ClientCookieDecoder} will be
-	 * chosen based on the encoder
+	 * chosen based on the encoder.
 	 *
 	 * @param encoder the preferred ClientCookieEncoder
 	 *
@@ -594,7 +617,7 @@ public abstract class HttpClient extends ClientTransport<HttpClient, HttpClientC
 
 	/**
 	 * Configure the
-	 * {@link ClientCookieEncoder} and {@link ClientCookieDecoder}
+	 * {@link ClientCookieEncoder} and {@link ClientCookieDecoder}.
 	 *
 	 * @param encoder the preferred ClientCookieEncoder
 	 * @param decoder the preferred ClientCookieDecoder
@@ -1066,7 +1089,7 @@ public abstract class HttpClient extends ClientTransport<HttpClient, HttpClientC
 	}
 
 	/**
-	 * Apply HTTP/2 configuration
+	 * Apply HTTP/2 configuration.
 	 *
 	 * @param http2Settings configures {@link Http2SettingsSpec} before requesting
 	 * @return a new {@link HttpClient}
@@ -1081,6 +1104,32 @@ public abstract class HttpClient extends ClientTransport<HttpClient, HttpClientC
 		}
 		HttpClient dup = duplicate();
 		dup.configuration().http2Settings = settings;
+		return dup;
+	}
+
+	/**
+	 * Apply HTTP/3 configuration.
+	 *
+	 * @param http3Settings configures {@link Http3SettingsSpec} before requesting
+	 * @return a new {@link HttpClient}
+	 * @since 1.2.0
+	 */
+	@Incubating
+	public final HttpClient http3Settings(Consumer<Http3SettingsSpec.Builder> http3Settings) {
+		Objects.requireNonNull(http3Settings, "http3Settings");
+		if (!isHttp3Available()) {
+			throw new UnsupportedOperationException(
+					"To enable HTTP/3 support, you must add the dependency `io.netty.incubator:netty-incubator-codec-http3`" +
+							" to the class path first");
+		}
+		Http3SettingsSpec.Builder builder = Http3SettingsSpec.builder();
+		http3Settings.accept(builder);
+		Http3SettingsSpec settings = builder.build();
+		if (settings.equals(configuration().http3Settings)) {
+			return this;
+		}
+		HttpClient dup = duplicate();
+		dup.configuration().http3Settings = settings;
 		return dup;
 	}
 
@@ -1253,7 +1302,7 @@ public abstract class HttpClient extends ClientTransport<HttpClient, HttpClientC
 	}
 
 	/**
-	 * Removes any previously applied SSL configuration customization
+	 * Removes any previously applied SSL configuration customization.
 	 *
 	 * @return a new {@link HttpClient}
 	 */
@@ -1289,6 +1338,14 @@ public abstract class HttpClient extends ClientTransport<HttpClient, HttpClientC
 		return request(HttpMethod.PATCH);
 	}
 
+	/**
+	 * The port to which this client should connect.
+	 * If a port is not specified, the default port {@code 80} is used.
+	 * <p><strong>Note:</strong> The port can be specified also with {@code PORT} environment variable.
+	 *
+	 * @param port the port to connect to
+	 * @return a new {@link HttpClient}
+	 */
 	@Override
 	public final HttpClient port(int port) {
 		return super.port(port);
@@ -1316,9 +1373,22 @@ public abstract class HttpClient extends ClientTransport<HttpClient, HttpClientC
 		HttpClientConfig config = dup.configuration();
 		config.protocols(supportedProtocols);
 
+		if (config.checkProtocol(h3)) {
+			if (!isHttp3Available()) {
+				throw new UnsupportedOperationException(
+						"To enable HTTP/3 support, you must add the dependency `io.netty.incubator:netty-incubator-codec-http3`" +
+								" to the class path first");
+			}
+
+			Supplier<? extends SocketAddress> bindAddressSupplier = config.bindAddress();
+			if ((bindAddressSupplier == null || bindAddressSupplier.get() == null)) {
+				config.bindAddress(() -> new InetSocketAddress(0));
+			}
+		}
+
 		boolean isH2c = config.checkProtocol(HttpClientConfig.h2c);
 		if ((!isH2c || config._protocols > 1) && HttpClientSecure.hasDefaultSslProvider(config)) {
-			dup.configuration().sslProvider = HttpClientSecure.defaultSslProvider(config);
+			config.sslProvider = HttpClientSecure.defaultSslProvider(config);
 		}
 		return dup;
 	}
@@ -1383,6 +1453,8 @@ public abstract class HttpClient extends ClientTransport<HttpClient, HttpClientC
 	 * <ul>
 	 *     <li>{@code 10} seconds handshake timeout unless
 	 *     the environment property {@code reactor.netty.tcp.sslHandshakeTimeout} is set</li>
+	 *     <li>{@code 3} seconds close_notify flush timeout</li>
+	 *     <li>{@code 0} second close_notify read timeout</li>
 	 *     <li>hostname verification enabled</li>
 	 * </ul>
 	 * </p>
@@ -1405,6 +1477,8 @@ public abstract class HttpClient extends ClientTransport<HttpClient, HttpClientC
 	 * <ul>
 	 *     <li>{@code 10} seconds handshake timeout unless the passed builder sets another configuration or
 	 *     the environment property {@code reactor.netty.tcp.sslHandshakeTimeout} is set</li>
+	 *     <li>{@code 3} seconds close_notify flush timeout</li>
+	 *     <li>{@code 0} second close_notify read timeout</li>
 	 *     <li>hostname verification enabled</li>
 	 * </ul>
 	 * </p>
@@ -1590,13 +1664,16 @@ public abstract class HttpClient extends ClientTransport<HttpClient, HttpClientC
 	}
 
 	static boolean isCompressing(HttpHeaders h) {
-		return h.contains(HttpHeaderNames.ACCEPT_ENCODING, HttpHeaderValues.GZIP, true);
+		return h.contains(HttpHeaderNames.ACCEPT_ENCODING, HttpHeaderValues.GZIP, true)
+				|| h.contains(HttpHeaderNames.ACCEPT_ENCODING, HttpHeaderValues.BR, true);
 	}
 
 	static String reactorNettyVersion() {
-		return Optional.ofNullable(HttpClient.class.getPackage()
-		                                           .getImplementationVersion())
-		               .orElse("dev");
+		Package pac = HttpClient.class.getPackage();
+		if (pac == null) {
+			return "dev";
+		}
+		return Optional.ofNullable(pac.getImplementationVersion()).orElse("dev");
 	}
 
 	static final Logger log = Loggers.getLogger(HttpClient.class);

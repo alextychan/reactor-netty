@@ -41,6 +41,7 @@ import reactor.core.publisher.Sinks;
 import reactor.netty.FutureMono;
 import reactor.netty.NettyOutbound;
 import reactor.netty.ReactorNetty;
+import reactor.netty.http.HttpOperations;
 import reactor.netty.http.websocket.WebsocketInbound;
 import reactor.netty.http.websocket.WebsocketOutbound;
 import reactor.util.annotation.Nullable;
@@ -48,6 +49,8 @@ import reactor.util.annotation.Nullable;
 import static reactor.netty.ReactorNetty.format;
 
 /**
+ * Conversion between Netty types and Reactor types ({@link HttpOperations}.
+ *
  * @author Stephane Maldini
  * @author Simon Baslé
  */
@@ -60,7 +63,7 @@ final class WebsocketClientOperations extends HttpClientOperations
 
 	volatile int closeSent;
 
-	final static String INBOUND_CANCEL_LOG = "WebSocket client inbound receiver cancelled, closing Websocket.";
+	static final String INBOUND_CANCEL_LOG = "WebSocket client inbound receiver cancelled, closing Websocket.";
 
 	WebsocketClientOperations(URI currentURI,
 			WebsocketClientSpec websocketClientSpec,

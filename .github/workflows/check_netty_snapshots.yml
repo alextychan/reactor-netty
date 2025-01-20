@@ -11,22 +11,29 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-20.04, macos-11, windows-2019]
+        os: [ubuntu-20.04, macos-13, windows-2022]
         transport: [native, nio]
         exclude:
           # excludes native on Windows (there's none)
-          - os: windows-2019
+          - os: windows-2022
             transport: native
           # macOS - https://github.com/netty/netty/issues/9689
-          - os: macos-11
+          - os: macos-13
             transport: native
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - name: Set up JDK 1.8
-        uses: actions/setup-java@v3
+        uses: actions/setup-java@7a6d8a8234af8eb26422e24e3006232cccaa061b
         with:
           distribution: 'temurin'
           java-version: '8'
+      - name: Set up JDK 17
+        uses: actions/setup-java@7a6d8a8234af8eb26422e24e3006232cccaa061b
+        with:
+            distribution: 'graalvm'
+            java-version: '17.0.12'
       - name: Build with Gradle
-        run: ./gradlew clean check --no-daemon -PforceTransport=${{ matrix.transport }} -PforceNettyVersion='4.1.88.Final-SNAPSHOT'
+        run: ./gradlew clean check -x :reactor-netty-core:java17Test --no-daemon -PforceTransport=${{ matrix.transport }} -PforceNettyVersion='4.1.118.Final-SNAPSHOT'
+      - name: GraalVM smoke tests
+        run: ./gradlew :reactor-netty-graalvm-smoke-tests:nativeTest --no-daemon -PforceTransport=${{ matrix.transport }} -PforceNettyVersion='4.1.118.Final-SNAPSHOT'

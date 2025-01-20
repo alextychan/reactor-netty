@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2023 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2011-2024 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,7 +18,6 @@ package reactor.netty.channel;
 import java.nio.channels.ClosedChannelException;
 import java.util.ArrayDeque;
 import java.util.Queue;
-import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
 import java.util.concurrent.atomic.AtomicReferenceFieldUpdater;
 import java.util.function.IntConsumer;
 
@@ -39,13 +38,14 @@ import reactor.util.annotation.Nullable;
 import static reactor.netty.ReactorNetty.format;
 
 /**
+ * An inbound-traffic API delegating to an underlying {@link Channel}.
+ *
  * @author Stephane Maldini
  */
 final class FluxReceive extends Flux<Object> implements Subscription, Disposable {
 
 	static final int QUEUE_LOW_LIMIT = 32;
 
-	final Channel           channel;
 	final ChannelOperations<?, ?> parent;
 	final EventLoop         eventLoop;
 
@@ -61,9 +61,7 @@ final class FluxReceive extends Flux<Object> implements Subscription, Disposable
 
 	volatile IntConsumer receiverCancel;
 
-	volatile int once;
-	static final AtomicIntegerFieldUpdater<FluxReceive> ONCE =
-		AtomicIntegerFieldUpdater.newUpdater(FluxReceive.class, "once");
+	boolean subscribedOnce;
 
 	// Please note, in this specific case WIP is non-volatile since all operation that
 	// involves work-in-progress pattern is within Netty Event-Loops which guarantees
@@ -79,9 +77,8 @@ final class FluxReceive extends Flux<Object> implements Subscription, Disposable
 		//reset channel to manual read if re-used
 
 		this.parent = parent;
-		this.channel = parent.channel();
-		this.eventLoop = channel.eventLoop();
-		channel.config()
+		this.eventLoop = parent.channel().eventLoop();
+		parent.channel().config()
 		       .setAutoRead(false);
 		CANCEL.lazySet(this, (state) -> {
 			if (eventLoop.inEventLoop()) {
@@ -153,11 +150,12 @@ final class FluxReceive extends Flux<Object> implements Subscription, Disposable
 	}
 
 	final void startReceiver(CoreSubscriber<? super Object> s) {
-		if (once == 0 && ONCE.compareAndSet(this, 0, 1)) {
+		if (!subscribedOnce) {
+			subscribedOnce = true;
 			if (log.isDebugEnabled()) {
-				log.debug(format(channel, "{}: subscribing inbound receiver"), this);
+				log.debug(format(parent.channel(), "{}: subscribing inbound receiver"), this);
 			}
-			if (inboundDone && getPending() == 0) {
+			if ((inboundDone && getPending() == 0) || isCancelled()) {
 				if (inboundError != null) {
 					Operators.error(s, inboundError);
 					return;
@@ -182,7 +180,7 @@ final class FluxReceive extends Flux<Object> implements Subscription, Disposable
 			}
 			else {
 				if (log.isDebugEnabled()) {
-					log.debug(format(channel, "{}: Rejecting additional inbound receiver."), this);
+					log.debug(format(parent.channel(), "{}: Rejecting additional inbound receiver."), this);
 				}
 
 				String msg = "Rejecting additional inbound receiver. State=" + toString(false);
@@ -218,7 +216,7 @@ final class FluxReceive extends Flux<Object> implements Subscription, Disposable
 			Object o;
 			while ((o = q.poll()) != null) {
 				if (log.isDebugEnabled()) {
-					log.debug(format(channel, "{}: dropping frame {}"), this, parent.asDebugLogMessage(o));
+					log.debug(format(parent.channel(), "{}: dropping frame {}"), this, parent.asDebugLogMessage(o));
 				}
 				ReferenceCountUtil.release(o);
 			}
@@ -283,11 +281,11 @@ final class FluxReceive extends Flux<Object> implements Subscription, Disposable
 				try {
 					if (logLeakDetection.isDebugEnabled()) {
 						if (v instanceof ByteBuf) {
-							((ByteBuf) v).touch(format(channel, "Receiver " + a.getClass().getName() +
+							((ByteBuf) v).touch(format(parent.channel(), "Receiver " + a.getClass().getName() +
 									" will handle the message from this point"));
 						}
 						else if (v instanceof ByteBufHolder) {
-							((ByteBufHolder) v).touch(format(channel, "Receiver " + a.getClass().getName() +
+							((ByteBufHolder) v).touch(format(parent.channel(), "Receiver " + a.getClass().getName() +
 									" will handle the message from this point"));
 						}
 					}
@@ -322,7 +320,7 @@ final class FluxReceive extends Flux<Object> implements Subscription, Disposable
 				receiverFastpath = true;
 				if (needRead) {
 					needRead = false;
-					channel.config()
+					parent.channel().config()
 					       .setAutoRead(true);
 				}
 				//CHECKSTYLE:OFF
@@ -336,13 +334,13 @@ final class FluxReceive extends Flux<Object> implements Subscription, Disposable
 			if ((receiverDemand -= e) > 0L || (e > 0L && q.size() < QUEUE_LOW_LIMIT)) {
 				if (needRead) {
 					needRead = false;
-					channel.config()
+					parent.channel().config()
 					       .setAutoRead(true);
 				}
 			}
 			else if (!needRead) {
 				needRead = true;
-				channel.config()
+				parent.channel().config()
 				       .setAutoRead(false);
 			}
 
@@ -358,7 +356,7 @@ final class FluxReceive extends Flux<Object> implements Subscription, Disposable
 	final void onInboundNext(Object msg) {
 		if (inboundDone || isCancelled()) {
 			if (log.isDebugEnabled()) {
-				log.debug(format(channel, "{}: dropping frame {}"), this, parent.asDebugLogMessage(msg));
+				log.debug(format(parent.channel(), "{}: dropping frame {}"), this, parent.asDebugLogMessage(msg));
 			}
 			ReferenceCountUtil.release(msg);
 			return;
@@ -368,11 +366,11 @@ final class FluxReceive extends Flux<Object> implements Subscription, Disposable
 			try {
 				if (logLeakDetection.isDebugEnabled()) {
 					if (msg instanceof ByteBuf) {
-						((ByteBuf) msg).touch(format(channel, "Receiver " + receiver.getClass().getName() +
+						((ByteBuf) msg).touch(format(parent.channel(), "Receiver " + receiver.getClass().getName() +
 								" will handle the message from this point"));
 					}
 					else if (msg instanceof ByteBufHolder) {
-						((ByteBufHolder) msg).touch(format(channel, "Receiver " + receiver.getClass().getName() +
+						((ByteBufHolder) msg).touch(format(parent.channel(), "Receiver " + receiver.getClass().getName() +
 								" will handle the message from this point"));
 					}
 				}
@@ -393,10 +391,10 @@ final class FluxReceive extends Flux<Object> implements Subscription, Disposable
 			}
 			if (logLeakDetection.isDebugEnabled()) {
 				if (msg instanceof ByteBuf) {
-					((ByteBuf) msg).touch(format(channel, "Buffered ByteBuf in the inbound buffer queue"));
+					((ByteBuf) msg).touch(format(parent.channel(), "Buffered ByteBuf in the inbound buffer queue"));
 				}
 				else if (msg instanceof ByteBufHolder) {
-					((ByteBufHolder) msg).touch(format(channel, "Buffered ByteBufHolder in the inbound buffer queue"));
+					((ByteBufHolder) msg).touch(format(parent.channel(), "Buffered ByteBufHolder in the inbound buffer queue"));
 				}
 			}
 			q.offer(msg);
@@ -423,20 +421,20 @@ final class FluxReceive extends Flux<Object> implements Subscription, Disposable
 		if (isCancelled() || inboundDone) {
 			if (log.isDebugEnabled()) {
 				if (AbortedException.isConnectionReset(err)) {
-					log.debug(format(channel, "Connection reset has been observed post termination"), err);
+					log.debug(format(parent.channel(), "Connection reset has been observed post termination"), err);
 				}
 				else {
-					log.warn(format(channel, "An exception has been observed post termination"), err);
+					log.warn(format(parent.channel(), "An exception has been observed post termination"), err);
 				}
 			}
 			else if (log.isWarnEnabled() && !AbortedException.isConnectionReset(err)) {
-				log.warn(format(channel, "An exception has been observed post termination, use DEBUG level to see the full stack: {}"), err.toString());
+				log.warn(format(parent.channel(), "An exception has been observed post termination, use DEBUG level to see the full stack: {}"), err.toString());
 			}
 			return;
 		}
 		CoreSubscriber<?> receiver = this.receiver;
 		this.inboundDone = true;
-		if (channel.isActive()) {
+		if (parent.channel().isActive()) {
 			parent.markPersistent(false);
 		}
 

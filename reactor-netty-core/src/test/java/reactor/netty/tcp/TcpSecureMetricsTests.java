@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019-2021 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2019-2024 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -31,11 +31,18 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static reactor.netty.Metrics.NA;
+import static reactor.netty.Metrics.PROXY_ADDRESS;
 import static reactor.netty.Metrics.REMOTE_ADDRESS;
 import static reactor.netty.Metrics.STATUS;
 import static reactor.netty.Metrics.URI;
+import static reactor.netty.micrometer.CounterAssert.assertCounter;
+import static reactor.netty.micrometer.DistributionSummaryAssert.assertDistributionSummary;
+import static reactor.netty.micrometer.TimerAssert.assertTimer;
 
 /**
+ * This test class verifies TCP metrics functionality.
+ *
  * @author Violeta Georgieva
  */
 class TcpSecureMetricsTests extends TcpMetricsTests {
@@ -76,7 +83,14 @@ class TcpSecureMetricsTests extends TcpMetricsTests {
 
 	@Override
 	protected void checkTlsTimer(String name, String[] tags, boolean exists) {
-		checkTimer(name, tags, exists);
+		if (exists) {
+			assertTimer(registry, name, tags)
+					.hasCountEqualTo(1)
+					.hasTotalTimeGreaterThanOrEqualTo(0);
+		}
+		else {
+			assertTimer(registry, name, tags).isNull();
+		}
 	}
 
 	@Test
@@ -109,18 +123,22 @@ class TcpSecureMetricsTests extends TcpMetricsTests {
 		String[] summaryTags = new String[] {REMOTE_ADDRESS, clientAddress, URI, "tcp"};
 
 		checkTlsTimer(SERVER_TLS_HANDSHAKE_TIME, timerTags, true);
-		checkDistributionSummary(SERVER_DATA_SENT, summaryTags, 0, 0, false);
-		checkDistributionSummary(SERVER_DATA_RECEIVED, summaryTags, 0, 0, false);
-		checkCounter(SERVER_ERRORS, summaryTags, 1, true);
+		assertDistributionSummary(registry, SERVER_DATA_SENT, summaryTags).isNull();
+		assertDistributionSummary(registry, SERVER_DATA_RECEIVED, summaryTags).isNull();
+		assertCounter(registry, SERVER_ERRORS, summaryTags).hasCountGreaterThanOrEqualTo(1);
 
 		InetSocketAddress sa = (InetSocketAddress) disposableServer.channel().localAddress();
 		String serverAddress = sa.getHostString() + ":" + sa.getPort();
-		timerTags = new String[] {REMOTE_ADDRESS, serverAddress, STATUS, "SUCCESS"};
-		summaryTags = new String[] {REMOTE_ADDRESS, serverAddress, URI, "tcp"};
+		timerTags = new String[] {REMOTE_ADDRESS, serverAddress, PROXY_ADDRESS, NA, STATUS, "SUCCESS"};
+		summaryTags = new String[] {REMOTE_ADDRESS, serverAddress, PROXY_ADDRESS, NA, URI, "tcp"};
 
-		checkTimer(CLIENT_CONNECT_TIME, timerTags, true);
-		checkDistributionSummary(CLIENT_DATA_SENT, summaryTags, 1, 5, true);
-		checkDistributionSummary(CLIENT_DATA_RECEIVED, summaryTags, 0, 0, false);
-		checkCounter(CLIENT_ERRORS, summaryTags, 0, false);
+		assertTimer(registry, CLIENT_CONNECT_TIME, timerTags)
+				.hasCountEqualTo(1)
+				.hasTotalTimeGreaterThanOrEqualTo(0);
+		assertDistributionSummary(registry, CLIENT_DATA_SENT, summaryTags)
+				.hasCountEqualTo(1)
+				.hasTotalAmountGreaterThanOrEqualTo(5);
+		assertDistributionSummary(registry, CLIENT_DATA_RECEIVED, summaryTags).isNull();
+		assertCounter(registry, CLIENT_ERRORS, summaryTags).isNull();
 	}
 }

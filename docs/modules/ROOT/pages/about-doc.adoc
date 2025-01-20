@@ -1,0 +1,53 @@
+[[about-doc]]
+= About the Documentation
+:linkattrs:
+
+Stephane Maldini <https://twitter.com/smaldini[@smaldini]>; Violeta Georgieva <https://twitter.com/violeta_g_g[@violeta_g_g]> Version {project-version}
+
+This section provides a brief overview of `Reactor Netty` reference documentation. You do not
+need to read this guide in a linear fashion. Each piece stands on its own, though they
+often refer to other pieces.
+
+[[latest-version-and-copyright-notice]]
+== Latest Version and Copyright Notice
+
+The `Reactor Netty` reference guide is available as `HTML` documents. The latest copy is available
+at https://projectreactor.io/docs/netty/release/reference/index.html
+
+Copies of this document may be made for your own use and for distribution to others,
+provided that you do not charge any fee for such copies and further provided that each
+copy contains this `Copyright Notice`, whether distributed in print or electronically.
+
+[[contributing-to-the-documentation]]
+== Contributing to the Documentation
+The reference guide is written in
+https://asciidoctor.org/docs/asciidoc-writers-guide/[Asciidoc] using https://docs.antora.org/antora/latest/[Antora], and you can find its
+sources at {reactor-netty-github-repo}/docs.
+
+If you have an improvement, we will be happy to get a pull request from you!
+
+We recommend that you check out a local copy of the repository so that you can
+generate the documentation by using the `asciidoctor` Gradle task and checking the
+rendering. Some of the sections rely on included files, so `GitHub` rendering is
+not always complete.
+
+ifeval::["{backend}" == "html5"]
+TIP: To facilitate documentation edits, you can edit the current page from the `Edit this Page` link located in the upper right corner sidebar. The link opens
+an edit `UI` directly on `GitHub` for the main source file for the current page. These links are
+only present in the `HTML5` version of this reference guide. They look like the following link:
+link:https://github.com/reactor/reactor-netty/edit/main/docs/modules/ROOT/pages/about-doc.adoc[Edit this Page^, role="fa fa-edit"] to make changes to xref:about-doc.adoc[About the Documentation] page.
+endif::[]
+
+[[getting-help]]
+== Getting Help
+There are several ways to reach out for help with `Reactor Netty`. You can:
+
+* Get in touch with the community on https://gitter.im/reactor/reactor-netty[Gitter].
+* Ask a question on stackoverflow.com at
+https://stackoverflow.com/tags/reactor-netty[`reactor-netty`].
+* Report bugs in `Github` issues. The repository is the following:
+https://github.com/reactor/reactor-netty/issues[reactor-netty].
+
+NOTE: All of `Reactor Netty` is open source,
+{reactor-netty-github-repo}/docs[including this
+documentation].

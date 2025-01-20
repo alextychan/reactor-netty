@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2023 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2011-2024 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -85,6 +85,8 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assumptions.assumeThat;
 
 /**
+ * This test class verifies {@link TcpClient}.
+ *
  * @author Stephane Maldini
  * @since 2.5
  */
@@ -1084,7 +1086,7 @@ public class TcpClientTests {
 	}
 
 	@Test
-	@SuppressWarnings({"deprecation", "FutureReturnValueIgnored"})
+	@SuppressWarnings({"deprecation", "FutureReturnValueIgnored", "ReturnValueIgnored"})
 	void testBootstrapUnsupported() {
 		assertThatExceptionOfType(UnsupportedOperationException.class)
 				.isThrownBy(() -> TcpClient.create().bootstrap(b -> {
@@ -1164,12 +1166,14 @@ public class TcpClientTests {
 
 		assertThatExceptionOfType(UnsupportedOperationException.class)
 				.isThrownBy(() -> TcpClient.create().bootstrap(b -> {
+					//ReturnValueIgnored is deliberate
 					b.equals(new Bootstrap());
 					return b;
 				}));
 
 		assertThatExceptionOfType(UnsupportedOperationException.class)
 				.isThrownBy(() -> TcpClient.create().bootstrap(b -> {
+					//ReturnValueIgnored is deliberate
 					b.hashCode();
 					return b;
 				}));
@@ -1183,6 +1187,7 @@ public class TcpClientTests {
 
 		assertThatExceptionOfType(UnsupportedOperationException.class)
 				.isThrownBy(() -> TcpClient.create().bootstrap(b -> {
+					//ReturnValueIgnored is deliberate
 					b.toString();
 					return b;
 				}));
@@ -1414,7 +1419,7 @@ public class TcpClientTests {
 		finally {
 			disposableServer.disposeNow();
 			loop.disposeLater()
-			    .block();
+			    .block(Duration.ofSeconds(5));
 		}
 	}
 

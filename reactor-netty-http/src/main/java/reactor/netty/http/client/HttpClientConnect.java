@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017-2023 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2017-2024 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -55,12 +55,10 @@ import reactor.netty.Connection;
 import reactor.netty.ConnectionObserver;
 import reactor.netty.NettyOutbound;
 import reactor.netty.channel.AbortedException;
-import reactor.netty.http.HttpOperations;
 import reactor.netty.http.HttpProtocol;
 import reactor.netty.tcp.TcpClientConfig;
 import reactor.netty.transport.AddressUtils;
 import reactor.netty.transport.ProxyProvider;
-import reactor.netty.tcp.SslProvider;
 import reactor.util.Logger;
 import reactor.util.Loggers;
 import reactor.util.annotation.Nullable;
@@ -110,7 +108,7 @@ class HttpClientConnect extends HttpClient {
 
 		Mono<? extends Connection> mono;
 		if (config.deferredConf != null) {
-			return config.deferredConf.apply(Mono.just(config))
+			mono = config.deferredConf.apply(Mono.just(config))
 			           .flatMap(MonoHttpConnect::new);
 		}
 		else {
@@ -187,6 +185,10 @@ class HttpClientConnect extends HttpClient {
 			httpClient.configuration().proxyProvider(config.proxyProvider());
 		}
 
+		if (config.proxyProviderSupplier() != null) {
+			httpClient.configuration().proxyProviderSupplier(config.proxyProviderSupplier());
+		}
+
 		if (config.sslProvider() != null) {
 			httpClient = httpClient.secure(config.sslProvider());
 		}
@@ -203,16 +205,17 @@ class HttpClientConnect extends HttpClient {
 		}
 
 		@Override
-		@SuppressWarnings("deprecation")
 		public void subscribe(CoreSubscriber<? super Connection> actual) {
 			HttpClientHandler handler = new HttpClientHandler(config);
 
 			Mono.<Connection>create(sink -> {
+				boolean configCopied = false;
 				HttpClientConfig _config = config;
 
 				//append secure handler if needed
 				if (handler.toURI.isSecure()) {
 					if (_config.sslProvider == null) {
+						configCopied = true;
 						_config = new HttpClientConfig(config);
 						_config.sslProvider = HttpClientSecure.defaultSslProvider(_config);
 					}
@@ -229,20 +232,10 @@ class HttpClientConnect extends HttpClient {
 							return;
 						}
 					}
-
-					if (_config.sslProvider.getDefaultConfigurationType() == null) {
-						if (_config.checkProtocol(HttpClientConfig.h2)) {
-							_config.sslProvider = SslProvider.updateDefaultConfiguration(_config.sslProvider,
-									SslProvider.DefaultConfigurationType.H2);
-						}
-						else {
-							_config.sslProvider = SslProvider.updateDefaultConfiguration(_config.sslProvider,
-									SslProvider.DefaultConfigurationType.TCP);
-						}
-					}
 				}
 				else {
 					if (_config.sslProvider != null) {
+						configCopied = true;
 						_config = new HttpClientConfig(config);
 						_config.sslProvider = null;
 					}
@@ -258,6 +251,20 @@ class HttpClientConnect extends HttpClient {
 							return;
 						}
 					}
+					else if (_config.checkProtocol(HttpClientConfig.h3)) {
+						sink.error(new IllegalArgumentException("Configured HTTP/3 protocol without TLS. Check URL scheme"));
+						return;
+					}
+				}
+
+				if (_config.proxyProvider() == null && _config.proxyProviderSupplier() != null) {
+					if (!configCopied) {
+						configCopied = true;
+						_config = new HttpClientConfig(config);
+					}
+					ProxyProvider proxyProvider = _config.proxyProviderSupplier().get();
+					_config.proxyProvider(proxyProvider);
+					handler.proxyProvider = proxyProvider;
 				}
 
 				ConnectionObserver observer =
@@ -464,8 +471,9 @@ class HttpClientConnect extends HttpClient {
 		final Consumer<HttpClientRequest>
 		                              redirectRequestConsumer;
 		final HttpResponseDecoderSpec decoder;
-		final ProxyProvider           proxyProvider;
 		final Duration                responseTimeout;
+
+		ProxyProvider                 proxyProvider;
 
 		volatile UriEndpoint        toURI;
 		volatile String             resourceUrl;
@@ -536,7 +544,8 @@ class HttpClientConnect extends HttpClient {
 				                        .setProtocolVersion(HttpVersion.HTTP_1_1)
 				                        .headers();
 
-				ch.path = HttpOperations.resolvePath(ch.uri());
+				// Reset to pickup the actual uri()
+				ch.path = null;
 
 				if (!defaultHeaders.isEmpty()) {
 					headers.set(defaultHeaders);
@@ -558,9 +567,9 @@ class HttpClientConnect extends HttpClient {
 				ch.followRedirectPredicate(followRedirectPredicate);
 
 				if (!Objects.equals(method, HttpMethod.GET) &&
-							!Objects.equals(method, HttpMethod.HEAD) &&
-							!Objects.equals(method, HttpMethod.DELETE) &&
-							!headers.contains(HttpHeaderNames.CONTENT_LENGTH)) {
+						!Objects.equals(method, HttpMethod.HEAD) &&
+						!Objects.equals(method, HttpMethod.DELETE) &&
+						!headers.contains(HttpHeaderNames.CONTENT_LENGTH)) {
 					ch.chunkedTransfer(true);
 				}
 
@@ -601,7 +610,13 @@ class HttpClientConnect extends HttpClient {
 				}
 
 				ch.redirectRequestConsumer(consumer);
-				return handler != null ? handler.apply(ch, ch) : ch.send();
+				if (handler != null) {
+					Publisher<Void> publisher = handler.apply(ch, ch);
+					return ch.equals(publisher) ? ch.send() : publisher;
+				}
+				else {
+					return ch.send();
+				}
 			}
 			catch (Throwable t) {
 				return Mono.error(t);
@@ -701,9 +716,25 @@ class HttpClientConnect extends HttpClient {
 
 	static final AsciiString ALL = new AsciiString("*/*");
 
-	static final int DEFAULT_PORT = System.getenv("PORT") != null ? Integer.parseInt(System.getenv("PORT")) : 80;
-
 	static final Logger log = Loggers.getLogger(HttpClientConnect.class);
 
 	static final BiFunction<String, Integer, InetSocketAddress> URI_ADDRESS_MAPPER = AddressUtils::createUnresolved;
+
+	/**
+	 * The default port for reactor-netty HTTP clients. Defaults to 80 but can be tuned via
+	 * the {@code PORT} <b>environment variable</b>.
+	 */
+	static final int DEFAULT_PORT;
+	static {
+		int port;
+		String portStr = null;
+		try {
+			portStr = System.getenv("PORT");
+			port = portStr != null ? Integer.parseInt(portStr) : 80;
+		}
+		catch (NumberFormatException e) {
+			throw new IllegalArgumentException("Invalid environment variable [PORT=" + portStr + "].", e);
+		}
+		DEFAULT_PORT = port;
+	}
 }

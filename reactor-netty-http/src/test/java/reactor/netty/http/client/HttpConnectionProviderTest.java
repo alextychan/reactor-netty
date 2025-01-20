@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021-2022 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2021-2024 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -26,6 +26,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static reactor.netty.http.client.HttpConnectionProvider.HTTP2_CONNECTION_PROVIDER_FACTORY;
 
 /**
+ * This test class verifies {@link HttpConnectionProvider}.
+ *
  * @author Violeta Georgieva
  */
 class HttpConnectionProviderTest {
@@ -40,7 +42,7 @@ class HttpConnectionProviderTest {
 					.isEqualTo(provider.maxConnections());
 			// Http2ConnectionProvider inherits the configuration from the configured provider
 			assertThat(configuredConnectionProvider.maxConnections())
-					.isEqualTo(configuredConnectionProvider.getOrCreate().maxConnections());
+					.isEqualTo(configuredConnectionProvider.getOrCreateHttp2().maxConnections());
 		}
 		finally {
 			provider.disposeLater()
@@ -70,7 +72,7 @@ class HttpConnectionProviderTest {
 					.isEqualTo(provider.maxConnectionsPerHost());
 			// Http2ConnectionProvider inherits the configuration from the configured provider
 			assertThat(configuredConnectionProvider.maxConnectionsPerHost())
-					.isEqualTo(configuredConnectionProvider.getOrCreate().maxConnectionsPerHost());
+					.isEqualTo(configuredConnectionProvider.getOrCreateHttp2().maxConnectionsPerHost());
 		}
 		finally {
 			provider.disposeLater()

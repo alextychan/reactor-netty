@@ -1,0 +1,728 @@
+:sourcedir: {http}/src/main/java
+:examples-link: {reactor-netty-github-repo}/reactor-netty-examples/src/main/java/reactor/netty/examples/documentation/http/server
+:examples-dir: {examples}/src/main/java/reactor/netty/examples/documentation/http/server
+:wirelogger: reactor.netty.http.server.HttpServer
+
+[[http-server]]
+= HTTP Server
+
+`Reactor Netty` provides the easy-to-use and easy-to-configure
+{javadoc}/reactor/netty/http/server/HttpServer.html[`HttpServer`] class.
+It hides most of the `Netty` functionality that is needed in order to create a `HTTP` server
+and adds `Reactive Streams` backpressure.
+
+[[starting-and-stopping]]
+== Starting and Stopping
+
+To start an HTTP server, you must create and configure a
+{javadoc}/reactor/netty/http/server/HttpServer.html[HttpServer] instance.
+By default, the `host` is configured for any local address, and the system picks up an ephemeral port
+when the `bind` operation is invoked.
+The following example shows how to create an `HttpServer` instance:
+
+{examples-link}/create/Application.java
+[%unbreakable]
+----
+include::{examples-dir}/create/Application.java[lines=18..31]
+----
+<1> Creates an {javadoc}/reactor/netty/http/server/HttpServer.html[HttpServer]
+instance ready for configuring.
+<2> Starts the server in a blocking fashion and waits for it to finish initializing.
+
+The returned {javadoc}/reactor/netty/DisposableServer.html[`DisposableServer`]
+offers a simple server API, including {javadoc}/reactor/netty/DisposableChannel.html#disposeNow-java.time.Duration-[`disposeNow()`],
+which shuts the server down in a blocking fashion.
+
+[[host-and-port]]
+=== Host and Port
+
+To serve on a specific `host` and `port`, you can apply the following configuration to the `HTTP` server:
+
+{examples-link}/address/Application.java
+[%unbreakable]
+----
+include::{examples-dir}/address/Application.java[lines=18..33]
+----
+<1> Configures the `HTTP` server host
+<2> Configures the `HTTP` server port
+
+To serve on multiple addresses, after having configured the `HttpServer` you can bind it multiple times to obtain separate `DisposableServer`s.
+All created servers will share resources such as `LoopResources` because they use the same configuration instance under the hood.
+
+{examples-link}/address/MultiAddressApplication.java
+[%unbreakable]
+----
+include::{examples-dir}/address/MultiAddressApplication.java[lines=18..41]
+----
+<1> Configures the first `HTTP` server host
+<2> Configures the first `HTTP` server port
+<3> Configures the second `HTTP` server host
+<4> Configures the second `HTTP` server port
+
+[[eager-initialization]]
+== Eager Initialization
+
+By default, the initialization of the `HttpServer` resources happens on demand. This means that the `bind
+operation` absorbs the extra time needed to initialize and load:
+
+ * the event loop groups
+ * the native transport libraries (when native transport is used)
+ * the native libraries for the security (in case of `OpenSsl`)
+
+When you need to preload these resources, you can configure the `HttpServer` as follows:
+
+{examples-link}/warmup/Application.java
+[%unbreakable]
+----
+include::{examples-dir}/warmup/Application.java[lines=18..36]
+----
+<1> Initialize and load the event loop groups, the native transport libraries and the native libraries for the security
+
+[[routing-http]]
+== Routing HTTP
+
+Defining routes for the `HTTP` server requires configuring the provided
+{javadoc}/reactor/netty/http/server/HttpServerRoutes.html[`HttpServerRoutes`] builder.
+The following example shows how to do so:
+
+{examples-link}/routing/Application.java
+[%unbreakable]
+----
+include::{examples-dir}/routing/Application.java[lines=18..41]
+----
+<1> Serves a `GET` request to `/hello` and returns `Hello World!`
+<2> Serves a `POST` request to `/echo` and returns the received request body as a response.
+<3> Serves a `GET` request to `/path/\{param\}` and returns the value of the path parameter.
+<4> Serves websocket to `/ws` and returns the received incoming data as outgoing data.
+
+NOTE: The server routes are unique and only the first matching in order of declaration is invoked.
+
+[[sse]]
+=== SSE
+
+The following code shows how you can configure the `HTTP` server to serve `Server-Sent Events`:
+
+{examples-link}/sse/Application.java
+[%unbreakable]
+----
+include::{examples-dir}/sse/Application.java[lines=18..76]
+----
+
+[[static-resources]]
+=== Static Resources
+
+The following code shows how you can configure the `HTTP` server to serve static resources:
+
+{examples-link}/staticresources/Application.java
+[%unbreakable]
+----
+include::{examples-dir}/staticresources/Application.java[lines=18..37]
+----
+
+[[writing-data]]
+== Writing Data
+
+To send data to a connected client, you must attach an I/O handler by using either
+{javadoc}/reactor/netty/http/server/HttpServer.html#handle-java.util.function.BiFunction-[`handle(...)`] or
+{javadoc}/reactor/netty/http/server/HttpServer.html#route-java.util.function.Consumer-[`route(...)`].
+The I/O handler has access to {javadoc}/reactor/netty/http/server/HttpServerResponse.html[`HttpServerResponse`],
+to be able to write data. The following example uses the `handle(...)` method:
+
+{examples-link}/send/Application.java
+[%unbreakable]
+----
+include::{examples-dir}/send/Application.java[lines=18..33]
+----
+<1> Sends `hello` string to the connected clients
+
+[[adding-headers-and-other-metadata]]
+=== Adding Headers and Other Metadata
+
+When you send data to the connected clients, you may need to send additional headers,
+cookies, status code, and other metadata.
+You can provide this additional metadata by using
+{javadoc}/reactor/netty/http/server/HttpServerResponse.html[`HttpServerResponse`].
+The following example shows how to do so:
+
+{examples-link}/send/headers/Application.java
+[%unbreakable]
+----
+include::{examples-dir}/send/headers/Application.java[lines=18..40]
+----
+
+[[compression]]
+=== Compression
+
+You can configure the `HTTP` server to send a compressed response, depending on the request header
+`Accept-Encoding`.
+
+`Reactor Netty` provides three different strategies for compressing the outgoing data:
+
+* `compress(boolean)`: Depending on the boolean that is provided, the compression is enabled (`true`) or disabled (`false`).
+* `compress(int)`: The compression is performed once the response size exceeds the given value (in bytes).
+* `compress(BiPredicate<HttpServerRequest, HttpServerResponse>)`: The compression is performed if
+the predicate returns `true`.
+
+The following example uses the `compress` method (set to `true`) to enable compression:
+
+{examples-link}/compression/Application.java
+[%unbreakable]
+----
+include::{examples-dir}/compression/Application.java[lines=18..38]
+----
+
+[[consuming-data]]
+== Consuming Data
+
+To receive data from a connected client, you must attach an I/O handler by using either
+{javadoc}/reactor/netty/http/server/HttpServer.html#handle-java.util.function.BiFunction-[`handle(...)`] or
+{javadoc}/reactor/netty/http/server/HttpServer.html#route-java.util.function.Consumer-[`route(...)`].
+The I/O handler has access to {javadoc}/reactor/netty/http/server/HttpServerRequest.html[`HttpServerRequest`],
+to be able to read data.
+
+The following example uses the `handle(...)` method:
+
+{examples-link}/read/Application.java
+[%unbreakable]
+----
+include::{examples-dir}/read/Application.java[lines=18..32]
+----
+<1> Receives data from the connected clients
+
+[[reading-headers-uri-params-and-other-metadata]]
+=== Reading Headers, URI Params, and other Metadata
+
+When you receive data from the connected clients, you might need to check request headers,
+parameters, and other metadata. You can obtain this additional metadata by using
+{javadoc}/reactor/netty/http/server/HttpServerRequest.html[`HttpServerRequest`].
+The following example shows how to do so:
+
+{examples-link}/read/headers/Application.java
+[%unbreakable]
+----
+include::{examples-dir}/read/headers/Application.java[lines=18..40]
+----
+
+[[reading-post-form-or-multipart-data]]
+=== Reading Post Form or Multipart Data
+
+When you receive data from the connected clients, you might want to access `POST` `form` (`application/x-www-form-urlencoded`) or
+`multipart` (`multipart/form-data`) data. You can obtain this data by using
+{javadoc}/reactor/netty/http/server/HttpServerRequest.html[`HttpServerRequest`].
+
+{examples-link}/multipart/Application.java
+[%unbreakable]
+----
+include::{examples-dir}/multipart/Application.java[lines=18..36]
+----
+<1> Receives `POST` form/multipart data.
+
+When you need to change the default settings, you can configure the `HttpServer` or you can provide a configuration per request:
+
+{examples-link}/multipart/custom/Application.java
+[%unbreakable]
+----
+include::{examples-dir}/multipart/custom/Application.java[lines=18..37]
+----
+<1> Configuration on the `HttpServer` that specifies that the data is stored on disk only.
+<2> Configuration per request that specifies that if the data size exceed the specified size, the data is stored on the disk.
+
+The following listing shows the available configurations:
+
+[width="100%",options="header"]
+|=======
+| Configuration name | Description
+| `baseDirectory` | Configures the directory where to store the data on the disk. Default to generated temp directory.
+| `charset` | Configures the `Charset` for the data. Default to `StandardCharsets#UTF_8`.
+| `maxInMemorySize` | Configures the maximum in-memory size per data i.e. the data is written
+on disk if the size is greater than `maxInMemorySize`, else it is in memory.
+If set to `-1` the entire contents is stored in memory. If set to `0` the entire contents is stored on disk.
+Default to `16kb`.
+| `maxSize` | Configures the maximum size per data. When the limit is reached, an exception is raised.
+If set to `-1` this means no limitation. Default to `-1` - unlimited.
+| `scheduler` | Configures the scheduler to be used for offloading disk operations in the decoding phase.
+Default to `Schedulers#boundedElastic()`
+| `streaming` | When set to `true`, the data is streamed directly from the parsed input buffer stream,
+which means it is not stored either in memory or file. When `false`, parts are backed by in-memory and/or file storage.
+Default to `false`.
+*NOTE* that with streaming enabled, the provided data might not be in a complete state i.e. `HttpData#isCompleted()`
+has to be checked. Also note that enabling this property effectively ignores `maxInMemorySize`, `baseDirectory`, and `scheduler`.
+|=======
+
+[[obtaining-the-remote-client-address]]
+==== Obtaining the Remote (Client) Address
+
+In addition to the metadata that you can obtain from the request, you can also receive the
+`host (server)` address, the `remote (client)` address and the `scheme`. Depending on the
+chosen factory method, you can retrieve the information directly from the channel or by
+using the `Forwarded` or `X-Forwarded-*` `HTTP` request headers.
+The following example shows how to do so:
+
+{examples-link}/clientaddress/Application.java
+[%unbreakable]
+----
+include::{examples-dir}/clientaddress/Application.java[lines=18..38]
+----
+<1> Specifies that the information about the connection is to be obtained from the `Forwarded` and `X-Forwarded-*`
+`HTTP` request headers, if possible.
+<2> Returns the address of the remote (client) peer.
+
+It is also possible to customize the behavior of the `Forwarded` or `X-Forwarded-*` header handler.
+The following example shows how to do so:
+
+{examples-link}/clientaddress/CustomForwardedHeaderHandlerApplication.java
+[%unbreakable]
+----
+include::{examples-dir}/clientaddress/CustomForwardedHeaderHandlerApplication.java[lines=18..52]
+----
+<1> Add a custom header handler.
+<2> Returns the address of the remote (client) peer.
+
+[[http-request-decoder]]
+=== HTTP Request Decoder
+
+By default, `Netty` configures some restrictions for the incoming requests, such as:
+
+* The maximum length of the initial line.
+* The maximum length of all headers.
+* The maximum length of the content or each chunk.
+
+For more information, see {nettyjavadoc}/io/netty/handler/codec/http/HttpRequestDecoder.html[`HttpRequestDecoder`]
+and {nettyjavadoc}/io/netty/handler/codec/http/HttpServerUpgradeHandler.html[`HttpServerUpgradeHandler`]
+
+By default, the `HTTP` server is configured with the following settings:
+
+{http-source-link}/reactor/netty/http/HttpDecoderSpec.java
+[%unbreakable]
+----
+include::{sourcedir}/reactor/netty/http/HttpDecoderSpec.java[lines=28..40]
+----
+
+{http-source-link}/reactor/netty/http/server/HttpRequestDecoderSpec.java
+[%unbreakable]
+----
+include::{sourcedir}/reactor/netty/http/server/HttpRequestDecoderSpec.java[lines=42..47]
+----
+
+When you need to change these default settings, you can configure the `HTTP` server as follows:
+
+{examples-link}/requestdecoder/Application.java
+[%unbreakable]
+----
+include::{examples-dir}/requestdecoder/Application.java[lines=18..34]
+----
+<1> The maximum length of all headers will be `16384`.
+When this value is exceeded, a
+{nettyjavadoc}/io/netty/handler/codec/TooLongFrameException.html[TooLongFrameException]
+is raised.
+
+[[lifecycle-callbacks]]
+== Lifecycle Callbacks
+
+The following lifecycle callbacks are provided to let you extend the `HttpServer`:
+
+[width="100%",options="header"]
+|=======
+| Callback | Description
+| `doOnBind` | Invoked when the server channel is about to bind.
+| `doOnBound` | Invoked when the server channel is bound.
+| `doOnChannelInit` | Invoked when initializing the channel.
+| `doOnConnection` | Invoked when a remote client is connected
+| `doOnUnbound` | Invoked when the server channel is unbound.
+|=======
+
+The following example uses the `doOnConnection` and `doOnChannelInit` callbacks:
+
+{examples-link}/lifecycle/Application.java
+[%unbreakable]
+----
+include::{examples-dir}/lifecycle/Application.java[lines=18..39]
+----
+<1> `Netty` pipeline is extended with `ReadTimeoutHandler` when a remote client is connected.
+<2> `Netty` pipeline is extended with `LoggingHandler` when initializing the channel.
+
+[[tcp-level-configuration]]
+== TCP-level Configuration
+
+When you need to change configuration on the TCP level, you can use the following snippet
+to extend the default `TCP` server configuration:
+
+{examples-link}/channeloptions/Application.java
+[%unbreakable]
+----
+include::{examples-dir}/channeloptions/Application.java[lines=18..33]
+----
+
+See xref:tcp-server.adoc[TCP Server] for more detail about TCP-level configuration.
+
+include::partial$wire-logger.adoc[]
+
+include::partial$eventloop.adoc[]
+
+[[ssl-and-tls]]
+== SSL and TLS
+
+When you need SSL or TLS, you can apply the configuration shown in the next example.
+By default, if `OpenSSL` is available,
+{nettyjavadoc}/io/netty/handler/ssl/SslProvider.html#OPENSSL[`SslProvider.OPENSSL`]
+provider is used as a provider. Otherwise
+{nettyjavadoc}/io/netty/handler/ssl/SslProvider.html#JDK[`SslProvider.JDK`] is used.
+You can switch the provider by using
+{nettyjavadoc}/io/netty/handler/ssl/SslContextBuilder.html#sslProvider-io.netty.handler.ssl.SslProvider-[`SslContextBuilder`]
+or by setting `-Dio.netty.handler.ssl.noOpenSsl=true`.
+
+The following example uses `SslContextBuilder`:
+
+{examples-link}/security/Application.java
+----
+include::{examples-dir}/security/Application.java[lines=18..39]
+----
+
+[[server-name-indication]]
+=== Server Name Indication
+You can configure the `HTTP` server with multiple `SslContext` mapped to a specific domain.
+An exact domain name or a domain name containing a wildcard can be used when configuring the `SNI` mapping.
+
+The following example uses a domain name containing a wildcard:
+
+{examples-link}/sni/Application.java
+----
+include::{examples-dir}/sni/Application.java[lines=18..47]
+----
+
+[[http-access-log]]
+== HTTP Access Log
+
+You can enable the `HTTP` access log either programmatically or by configuration. By default, it is disabled.
+
+You can use `-Dreactor.netty.http.server.accessLogEnabled=true` to enable the `HTTP` access log by configuration.
+
+You can use the following configuration (for Logback or similar logging frameworks) to have a separate
+`HTTP` access log file:
+
+[source,xml]
+----
+<appender name="accessLog" class="ch.qos.logback.core.FileAppender">
+    <file>access_log.log</file>
+    <encoder>
+        <pattern>%msg%n</pattern>
+    </encoder>
+</appender>
+<appender name="async" class="ch.qos.logback.classic.AsyncAppender">
+    <appender-ref ref="accessLog" />
+</appender>
+
+<logger name="reactor.netty.http.server.AccessLog" level="INFO" additivity="false">
+    <appender-ref ref="async"/>
+</logger>
+----
+
+The following example enables it programmatically:
+
+{examples-link}/accessLog/Application.java
+----
+include::{examples-dir}/accessLog/Application.java[lines=18..32]
+----
+
+Calling this method takes precedence over the system property configuration.
+
+By default, the logging format is https://en.wikipedia.org/wiki/Common_Log_Format[Common Log Format], but you can
+specify a custom one as a parameter, as in the following example:
+
+{examples-link}/accessLog/CustomLogAccessFormatApplication.java
+----
+include::{examples-dir}/accessLog/CustomLogAccessFormatApplication.java[lines=18..33]
+----
+
+You can also filter `HTTP` access logs by using the `AccessLogFactory#createFilter` method, as in the following example:
+
+{examples-link}/accessLog/FilterLogAccessApplication.java
+----
+include::{examples-dir}/accessLog/FilterLogAccessApplication.java[lines=18..34]
+----
+
+Note that this method can take a custom format parameter too, as in this example:
+
+{examples-link}/accessLog/CustomFormatAndFilterAccessLogApplication.java.java
+----
+include::{examples-dir}/accessLog/CustomFormatAndFilterAccessLogApplication.java[lines=18..35]
+----
+<1> Specifies the filter predicate to use
+<2> Specifies the custom format to apply
+
+
+[[HTTP2]]
+== HTTP/2
+
+By default, the `HTTP` server supports `HTTP/1.1`. If you need `HTTP/2`, you can get it through configuration.
+In addition to the protocol configuration, if you need `H2` but not `H2C (cleartext)`, you must also configure SSL.
+
+NOTE: As Application-Layer Protocol Negotiation (ALPN) is not supported "`out-of-the-box`" by JDK8 (although some vendors backported ALPN to JDK8), you need an additional dependency to a native library that
+supports it -- for example, https://netty.io/wiki/forked-tomcat-native.html[`netty-tcnative-boringssl-static`].
+
+The following listing presents a simple `H2` example:
+
+{examples-link}/http2/H2Application.java
+----
+include::{examples-dir}/http2/H2Application.java[lines=18..44]
+----
+<1> Configures the server to support only `HTTP/2`
+<2> Configures `SSL`
+
+The application should now behave as follows:
+
+[source,bash]
+----
+$ curl --http2 https://localhost:8080 -i
+HTTP/2 200
+
+hello
+----
+
+The following listing presents a simple `H2C` example:
+
+{examples-link}/http2/H2CApplication.java
+----
+include::{examples-dir}/http2/H2CApplication.java[lines=18..41]
+----
+
+The application should now behave as follows:
+
+[source,bash]
+----
+$ curl --http2-prior-knowledge http://localhost:8080 -i
+HTTP/2 200
+
+hello
+----
+
+[[protocol-selection]]
+=== Protocol Selection
+
+{http-source-link}/reactor/netty/http/HttpProtocol.java
+----
+include::{sourcedir}/reactor/netty/http/HttpProtocol.java[lines=26..61]
+----
+
+[[HTTP3]]
+== HTTP/3
+
+By default, the `HTTP` server supports `HTTP/1.1`. If you need `HTTP/3`, you can get it through configuration.
+In addition to the protocol configuration, you need to add dependency to `io.netty.incubator:netty-incubator-codec-http3`.
+
+The following listing presents a simple `HTTP3` example:
+
+{examples-link}/http3/Application.java
+----
+include::{examples-dir}/http3/Application.java[lines=18..52]
+----
+<1> Configures the server to support only `HTTP/3`
+<2> Configures `SSL`
+<3> Configures `HTTP/3` settings
+
+The application should now behave as follows:
+
+[source,bash]
+----
+$ curl --http3 https://localhost:8080 -i
+HTTP/3 200
+server: reactor-netty
+content-length: 5
+
+hello
+----
+
+[[metrics]]
+== Metrics
+The HTTP server supports built-in integration with https://micrometer.io/[`Micrometer`].
+It exposes all metrics with a prefix of `reactor.netty.http.server`.
+
+The following table provides information for the HTTP server metrics:
+
+[width="100%",options="header"]
+|=======
+| metric name | type | description
+| reactor.netty.http.server.streams.active | Gauge | The number of active HTTP/2 streams.
+See xref:observability.adoc#observability-metrics-streams-active[Streams Active]
+| reactor.netty.http.server.connections.active | Gauge | The number of http connections currently processing requests.
+See xref:observability.adoc#observability-metrics-connections-active[Connections Active]
+| reactor.netty.http.server.connections.total | Gauge | The number of all opened connections.
+See xref:observability.adoc#observability-metrics-connections-total[Connections Total]
+| reactor.netty.http.server.data.received | DistributionSummary | Amount of the data received, in bytes.
+See xref:observability.adoc#observability-metrics-data-received[Data Received]
+| reactor.netty.http.server.data.sent | DistributionSummary | Amount of the data sent, in bytes.
+See xref:observability.adoc#observability-metrics-data-sent[Data Sent]
+| reactor.netty.http.server.errors | Counter | Number of errors that occurred.
+See xref:observability.adoc#observability-metrics-errors-count[Errors Count]
+| reactor.netty.http.server.data.received.time | Timer | Time spent in consuming incoming data.
+See xref:observability.adoc#observability-metrics-http-server-data-received-time[Http Server Data Received Time]
+| reactor.netty.http.server.data.sent.time | Timer | Time spent in sending outgoing data.
+See xref:observability.adoc#observability-metrics-http-server-data-sent-time[Http Server Data Sent Time]
+| reactor.netty.http.server.response.time | Timer | Total time for the request/response
+See xref:observability.adoc#observability-metrics-http-server-response-time[Http Server Response Time]
+|=======
+
+These additional metrics are also available:
+
+include::partial$alloc-metrics.adoc[]
+include::partial$eventloop-metrics.adoc[]
+
+The following example enables that integration:
+
+{examples-link}/metrics/Application.java
+----
+include::{examples-dir}/metrics/Application.java[lines=18..52]
+----
+<1> Applies upper limit for the meters with `URI` tag
+<2> Templated URIs will be used as an URI tag value when possible
+<3> Enables the built-in integration with Micrometer
+
+NOTE: In order to avoid a memory and CPU overhead of the enabled metrics, it is important to convert the real URIs to templated URIs when possible.
+Without a conversion to a template-like form, each distinct URI leads to the creation of a distinct tag, which takes a lot of memory for the metrics.
+
+NOTE: Always apply an upper limit for the meters with URI tags. Configuring an upper limit on the number of meters can help in cases when the real URIs cannot be templated.
+You can find more information at https://micrometer.io/docs/concepts#_denyaccept_meters[`maximumAllowableTags`].
+
+When HTTP server metrics are needed for an integration with a system other than `Micrometer` or you want
+to provide your own integration with `Micrometer`, you can provide your own metrics recorder, as follows:
+
+{examples-link}/metrics/custom/Application.java
+----
+include::{examples-dir}/metrics/custom/Application.java[lines=18..41]
+----
+<1> Enables HTTP server metrics and provides {javadoc}/reactor/netty/http/server/HttpServerMetricsRecorder.html[`HttpServerMetricsRecorder`] implementation.
+
+[[tracing]]
+== Tracing
+The HTTP server supports built-in integration with https://micrometer.io/docs/tracing[`Micrometer Tracing`].
+
+The following table provides information for the HTTP server spans:
+
+[width="100%",options="header"]
+|=======
+| contextual name | description
+| <HTTP METHOD>_<URI> | Information and total time for the request.
+See xref:observability.adoc#observability-spans-http-server-response-span[Http Server Response Span].
+|=======
+
+The following example enables that integration. This concrete example uses `Brave` and reports the information to `Zipkin`.
+See the https://micrometer.io/docs/tracing#_micrometer_tracing_opentelemetry_setup[`Micrometer Tracing`] documentation for `OpenTelemetry` setup.
+
+{examples-link}/tracing/Application.java
+----
+include::{examples-dir}/tracing/Application.java[lines=18..91]
+----
+<1> Initializes Brave, Zipkin, and the Observation registry.
+<2> Templated URIs are used as an URI tag value when possible.
+<3> Enables the built-in integration with Micrometer.
+
+The result in `Zipkin` looks like:
+
+image::http-server-tracing.png[role="invert-dark"]
+
+[[access-current-observation]]
+=== Access Current Observation
+Project Micrometer provides https://micrometer.io/docs/contextPropagation[`a library`] that assists with context propagation across
+different types of context mechanisms such as `ThreadLocal`, `Reactor Context` and others.
+
+The following example shows how to use this library in a custom `ChannelHandler`:
+
+{examples-link}/tracing/custom/Application.java
+----
+include::{examples-dir}/tracing/custom/Application.java[lines=18..85]
+----
+<1> Initializes Brave, Zipkin, and the Observation registry.
+<2> Templated URIs are used as an URI tag value when possible.
+<3> Enables the built-in integration with Micrometer.
+<4> Custom `ChannelHandler` that uses context propagation library. This concrete example overrides only
+`ChannelOutboundHandlerAdapter#write`, if it is needed, the same logic can be used for the rest of the methods.
+Also, this concrete example sets all `ThreadLocal` values for which there is a value in the given `Channel`,
+if another behaviour is needed please check https://micrometer.io/docs/contextPropagation[`context propagation library API`].
+For example, you may want to set only some of the `ThreadLocal` values.
+
+NOTE: When you enable Reactor Netty tracing within a framework, you may need to let Reactor Netty use the `ObservationRegistry` created by this framework.
+For this purpose you need to invoke {javadoc}/reactor/netty/Metrics.html#observationRegistry-io.micrometer.observation.ObservationRegistry-[`reactor.netty.Metrics#observationRegistry`].
+You may also need to configure the Reactor Netty `ObservationHandlers` using the API provided by the framework.
+
+[[unix-domain-sockets]]
+== Unix Domain Sockets
+The `HTTP` server supports Unix Domain Sockets (UDS) when native transport is in use for all java versions
+and when NIO transport is in use for java 17 and above.
+
+The following example shows how to use UDS support:
+
+{examples-link}/uds/Application.java
+----
+include::{examples-dir}/uds/Application.java[lines=18..38]
+----
+<1> Specifies `DomainSocketAddress` that will be used
+
+[[http-server-timeout-configuration]]
+== Timeout Configuration
+This section describes various timeout configuration options that can be used in `HttpServer`.
+Configuring a proper timeout may improve or solve issues in the communication process.
+The configuration options can be grouped as follows:
+
+* xref:http-server.adoc#http-server-request-timeout[Request Timeout]
+* xref:http-server.adoc#http-server-connection-timeout[Connection Timeout]
+* xref:http-server.adoc#http-server-ssl-tls-timeout[SSL/TLS Timeout]
+
+[[http-server-request-timeout]]
+=== Request Timeout
+The following listing shows all available request timeout configuration options.
+
+* `readTimeout` - the maximum time between each network-level read operation while reading a given request content (resolution: ms)
+* `requestTimeout` - the maximum time for reading a given request content (resolution: ms).
+
+NOTE: It is always a good practice to configure a read/request timeout.
+
+To customize the default settings, you can configure `HttpServer` as follows:
+
+{examples-link}/read/timeout/Application.java
+----
+include::{examples-dir}/read/timeout/Application.java[lines=18..36]
+----
+<1> Configures the read timeout to 5 second.
+<2> Configures the request timeout to 30 second.
+
+[[http-server-connection-timeout]]
+=== Connection Timeout
+The following listing shows all available connection timeout configuration options.
+
+* `idleTimeout` - The maximum time (resolution: ms) that this connection stays opened and waits for HTTP request.
+Once the timeout is reached, the connection is closed. By default,
+{javadoc}/reactor/netty/http/server/HttpServer.html#idleTimeout-java.time.Duration-[`idleTimeout`] is not specified,
+this indicates no timeout (i.e. infinite), which means the connection is closed only if one of the peers decides to close it explicitly.
+
+NOTE: It is always a good practice to configure an idle timeout.
+
+To customize the default settings, you can configure `HttpServer` as follows:
+
+{examples-link}/idle/timeout/Application.java
+----
+include::{examples-dir}/idle/timeout/Application.java[lines=18..35]
+----
+<1> Configures the default idle timeout to 1 second.
+
+[[http-server-ssl-tls-timeout]]
+=== SSL/TLS Timeout
+`HttpServer` supports the SSL/TLS functionality provided by Netty.
+
+The following list describes the available timeout configuration options:
+
+* `handshakeTimeout` - Use this option to configure the SSL handshake timeout (resolution: ms). Default: 10s.
+
+NOTE: You should consider increasing the SSL handshake timeout when expecting slow network connections.
+
+* `closeNotifyFlushTimeout` - Use this option to configure the SSL `close_notify` flush timeout (resolution: ms). Default: 3s.
+* `closeNotifyReadTimeout` - Use this option to configure the SSL `close_notify` read timeout (resolution: ms). Default: 0s.
+
+To customize the default settings, you can configure `HttpServer` as follows:
+
+{examples-link}/security/custom/Application.java
+----
+include::{examples-dir}/security/custom/Application.java[lines=18..44]
+----
+<1> Configures the SSL handshake timeout to 30 seconds.
+<2> Configures the SSL `close_notify` flush timeout to 10 seconds.
+<3> Configures the SSL `close_notify` read timeout to 10 seconds.

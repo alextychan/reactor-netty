@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2021 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2023 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -40,6 +40,7 @@ class Http2SettingsSpecTests {
 		assertThat(spec.maxConcurrentStreams()).isNull();
 		assertThat(spec.maxFrameSize()).isNull();
 		assertThat(spec.maxHeaderListSize()).isEqualTo(Http2CodecUtil.DEFAULT_HEADER_LIST_SIZE);
+		assertThat(spec.maxStreams()).isNull();
 		assertThat(spec.pushEnabled()).isNull();
 	}
 
@@ -47,7 +48,7 @@ class Http2SettingsSpecTests {
 	void headerTableSizeBadValues() {
 		assertThatExceptionOfType(IllegalArgumentException.class)
 				.isThrownBy(() -> builder.headerTableSize(-1))
-				.withMessage("Setting HEADER_TABLE_SIZE is invalid: -1");
+				.withMessageContaining("Setting HEADER_TABLE_SIZE is invalid: -1");
 	}
 
 	@Test
@@ -59,6 +60,7 @@ class Http2SettingsSpecTests {
 		assertThat(spec.maxConcurrentStreams()).isNull();
 		assertThat(spec.maxFrameSize()).isNull();
 		assertThat(spec.maxHeaderListSize()).isEqualTo(Http2CodecUtil.DEFAULT_HEADER_LIST_SIZE);
+		assertThat(spec.maxStreams()).isNull();
 		assertThat(spec.pushEnabled()).isNull();
 	}
 
@@ -66,7 +68,7 @@ class Http2SettingsSpecTests {
 	void initialWindowSizeBadValues() {
 		assertThatExceptionOfType(IllegalArgumentException.class)
 				.isThrownBy(() -> builder.initialWindowSize(-1))
-				.withMessage("Setting INITIAL_WINDOW_SIZE is invalid: -1");
+				.withMessageContaining("Setting INITIAL_WINDOW_SIZE is invalid: -1");
 	}
 
 	@Test
@@ -78,6 +80,7 @@ class Http2SettingsSpecTests {
 		assertThat(spec.maxConcurrentStreams()).isEqualTo(123);
 		assertThat(spec.maxFrameSize()).isNull();
 		assertThat(spec.maxHeaderListSize()).isEqualTo(Http2CodecUtil.DEFAULT_HEADER_LIST_SIZE);
+		assertThat(spec.maxStreams()).isNull();
 		assertThat(spec.pushEnabled()).isNull();
 	}
 
@@ -85,7 +88,7 @@ class Http2SettingsSpecTests {
 	void maxConcurrentStreamsBadValues() {
 		assertThatExceptionOfType(IllegalArgumentException.class)
 				.isThrownBy(() -> builder.maxConcurrentStreams(-1))
-				.withMessage("Setting MAX_CONCURRENT_STREAMS is invalid: -1");
+				.withMessageContaining("Setting MAX_CONCURRENT_STREAMS is invalid: -1");
 	}
 
 	@Test
@@ -97,6 +100,7 @@ class Http2SettingsSpecTests {
 		assertThat(spec.maxConcurrentStreams()).isNull();
 		assertThat(spec.maxFrameSize()).isEqualTo(16384);
 		assertThat(spec.maxHeaderListSize()).isEqualTo(Http2CodecUtil.DEFAULT_HEADER_LIST_SIZE);
+		assertThat(spec.maxStreams()).isNull();
 		assertThat(spec.pushEnabled()).isNull();
 	}
 
@@ -104,7 +108,7 @@ class Http2SettingsSpecTests {
 	void maxFrameSizeBadValues() {
 		assertThatExceptionOfType(IllegalArgumentException.class)
 				.isThrownBy(() -> builder.maxFrameSize(-1))
-				.withMessage("Setting MAX_FRAME_SIZE is invalid: -1");
+				.withMessageContaining("Setting MAX_FRAME_SIZE is invalid: -1");
 	}
 
 	@Test
@@ -116,6 +120,7 @@ class Http2SettingsSpecTests {
 		assertThat(spec.maxConcurrentStreams()).isNull();
 		assertThat(spec.maxFrameSize()).isNull();
 		assertThat(spec.maxHeaderListSize()).isEqualTo(123);
+		assertThat(spec.maxStreams()).isNull();
 		assertThat(spec.pushEnabled()).isNull();
 	}
 
@@ -123,7 +128,53 @@ class Http2SettingsSpecTests {
 	void maxHeaderListSizeBadValues() {
 		assertThatExceptionOfType(IllegalArgumentException.class)
 				.isThrownBy(() -> builder.maxHeaderListSize(-1))
-				.withMessage("Setting MAX_HEADER_LIST_SIZE is invalid: -1");
+				.withMessageContaining("Setting MAX_HEADER_LIST_SIZE is invalid: -1");
+	}
+
+	@Test
+	public void maxStreamsNoMaxConcurrentStreams() {
+		builder.maxStreams(123);
+		Http2SettingsSpec spec = builder.build();
+		assertThat(spec.headerTableSize()).isNull();
+		assertThat(spec.initialWindowSize()).isNull();
+		assertThat(spec.maxConcurrentStreams()).isEqualTo(123);
+		assertThat(spec.maxFrameSize()).isNull();
+		assertThat(spec.maxHeaderListSize()).isEqualTo(Http2CodecUtil.DEFAULT_HEADER_LIST_SIZE);
+		assertThat(spec.maxConcurrentStreams()).isEqualTo(123);
+		assertThat(spec.pushEnabled()).isNull();
+	}
+
+	@Test
+	public void maxStreamsWithMaxConcurrentStreams_1() {
+		builder.maxStreams(123).maxConcurrentStreams(456);
+		Http2SettingsSpec spec = builder.build();
+		assertThat(spec.headerTableSize()).isNull();
+		assertThat(spec.initialWindowSize()).isNull();
+		assertThat(spec.maxConcurrentStreams()).isEqualTo(123);
+		assertThat(spec.maxFrameSize()).isNull();
+		assertThat(spec.maxHeaderListSize()).isEqualTo(Http2CodecUtil.DEFAULT_HEADER_LIST_SIZE);
+		assertThat(spec.maxStreams()).isEqualTo(123);
+		assertThat(spec.pushEnabled()).isNull();
+	}
+
+	@Test
+	public void maxStreamsWithMaxConcurrentStreams_2() {
+		builder.maxStreams(456).maxConcurrentStreams(123);
+		Http2SettingsSpec spec = builder.build();
+		assertThat(spec.headerTableSize()).isNull();
+		assertThat(spec.initialWindowSize()).isNull();
+		assertThat(spec.maxConcurrentStreams()).isEqualTo(123);
+		assertThat(spec.maxFrameSize()).isNull();
+		assertThat(spec.maxHeaderListSize()).isEqualTo(Http2CodecUtil.DEFAULT_HEADER_LIST_SIZE);
+		assertThat(spec.maxStreams()).isEqualTo(456);
+		assertThat(spec.pushEnabled()).isNull();
+	}
+
+	@Test
+	public void maxStreamsBadValues() {
+		assertThatExceptionOfType(IllegalArgumentException.class)
+				.isThrownBy(() -> builder.maxStreams(-1))
+				.withMessageContaining("maxStreams must be positive");
 	}
 
 	/*
